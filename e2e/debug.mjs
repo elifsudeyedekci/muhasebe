@@ -1,0 +1,11 @@
+import { startServer, waitUp, launch, watch, login, BASE } from './lib.mjs';
+const server = startServer(); await waitUp();
+const { browser, ctx } = await launch();
+const page = await ctx.newPage(); watch(page, 'd');
+await login(page, 'musteri@e2e.local', 'Yesil#Orman-9137Zx');
+await page.getByText('Eldeki para').waitFor({ timeout: 20000 });
+await page.goto(BASE + '/#/invoices');
+await page.getByRole('button', { name: /Satış faturası/ }).first().click();
+console.log(await page.locator('.modal label').allTextContents());
+console.log(await page.locator('.modal [id^=inv_]').count());
+await browser.close(); server.kill();

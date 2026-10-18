@@ -1,0 +1,13 @@
+_tools/
+dist/
+e2e/node_modules/
+e2e/shots/
+e2e/ekstre.csv
+app/config.php
+app/storage/uploads/*
+app/storage/logs/*
+app/storage/backups/*
+app/storage/tmp/*
+app/storage/installed.lock
+app/storage/setup.token
+.DS_Store

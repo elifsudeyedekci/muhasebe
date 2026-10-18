@@ -1,0 +1,8 @@
+# Uygulama dizini web kökünün DIŞINDA olmalıdır; yanlışlıkla içeride kalırsa her şeye erişimi kapatır.
+<IfModule mod_authz_core.c>
+  Require all denied
+</IfModule>
+<IfModule !mod_authz_core.c>
+  Order allow,deny
+  Deny from all
+</IfModule>

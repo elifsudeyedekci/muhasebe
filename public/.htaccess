@@ -1,0 +1,52 @@
+# FunBreak Ön Muhasebe — Apache/LiteSpeed (cPanel / Natro). Belge kökü: muhasebe.funbreak.com.tr
+Options -Indexes -MultiViews
+DirectoryIndex index.html
+AddDefaultCharset UTF-8
+
+<IfModule mod_rewrite.c>
+  RewriteEngine On
+  # HTTPS zorunlu (301)
+  RewriteCond %{HTTPS} !=on
+  RewriteCond %{HTTP:X-Forwarded-Proto} !=https
+  RewriteRule ^ https://%{HTTP_HOST}%{REQUEST_URI} [L,R=301]
+  # www olmayan tek adres
+  # nokta ile başlayan dosyalar ve uygulama dizinleri dışarıya kapalı (.well-known hariç)
+  RewriteRule (^|/)\.(?!well-known/) - [F,L]
+  RewriteRule ^(app|storage|tests|tools|_tools|migrations|src)(/|$) - [F,L]
+  # API: /api/... → api/index.php
+  RewriteRule ^api/(.*)$ api/index.php [L,QSA]
+</IfModule>
+
+# Yalnızca api/index.php ve install.php çalıştırılabilir PHP dosyalarıdır
+<IfModule mod_authz_core.c>
+  <FilesMatch "\.(php|phtml|phar|inc)$">
+    Require all denied
+  </FilesMatch>
+  <FilesMatch "^(index|install)\.php$">
+    Require all granted
+  </FilesMatch>
+</IfModule>
+<IfModule mod_authz_core.c>
+  <FilesMatch "\.(log|sql|gz|lock|token|bak|env|ini|yml|yaml)$">
+    Require all denied
+  </FilesMatch>
+</IfModule>
+
+<IfModule mod_headers.c>
+  Header always set Strict-Transport-Security "max-age=63072000; includeSubDomains; preload"
+  Header always set X-Content-Type-Options "nosniff"
+  Header always set X-Frame-Options "DENY"
+  Header always set Referrer-Policy "no-referrer"
+  Header always set Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=()"
+  Header always set Cross-Origin-Opener-Policy "same-origin"
+  Header always set Cross-Origin-Resource-Policy "same-origin"
+  Header always set Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; manifest-src 'self'; worker-src 'self'"
+  Header unset X-Powered-By
+  # Statik dosyalar her açılışta doğrulanır (ETag); API yanıtları PHP tarafından no-store gönderilir
+  <FilesMatch "\.(html|js|css|webmanifest)$">
+    Header set Cache-Control "no-cache"
+  </FilesMatch>
+  <FilesMatch "\.(png|svg|ico)$">
+    Header set Cache-Control "public, max-age=604800"
+  </FilesMatch>
+</IfModule>
