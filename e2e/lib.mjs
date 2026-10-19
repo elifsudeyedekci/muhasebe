@@ -41,7 +41,7 @@ export async function launch(deviceName) {
 }
 export function watch(page, tag) {
   page.on('console', (m) => { if (['error', 'warning'].includes(m.type())) { const t = m.text(); R.consoleErrors.push(`[${tag}] ${m.type()}: ${t}`); } });
-  page.on('pageerror', (e) => R.consoleErrors.push(`[${tag}] pageerror: ${e.message}`));
+  page.on('pageerror', (e) => R.consoleErrors.push(`[${tag}] pageerror: ${e.message} :: ${String(e.stack || '').split('\n').slice(0, 4).join(' | ')}`));
   page.on('requestfailed', (r) => { if (!/favicon/.test(r.url())) R.consoleErrors.push(`[${tag}] requestfailed: ${r.url()} ${r.failure()?.errorText}`); });
 }
 export async function shot(page, name) { await page.screenshot({ path: path.join(SHOTS, name + '.png'), fullPage: false }); }

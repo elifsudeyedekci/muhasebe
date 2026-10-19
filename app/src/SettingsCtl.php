@@ -11,6 +11,7 @@ final class SettingsCtl
         'vat_rates' => [0, 1000, 2000], 'preferred_currency' => 'TRY',
         'notify' => ['due' => true, 'overdue' => true, 'card' => true, 'bills' => true, 'email' => false],
         'invoice' => ['prefix' => '', 'default_due_days' => 30, 'note' => ''],
+        'stock' => ['allow_negative' => false],
     ];
 
     public static function routes(Router $r): void
@@ -101,6 +102,9 @@ final class SettingsCtl
             $new['invoice']['prefix'] = (string)V::str($b['invoice'], 'prefix', 12, false);
             $new['invoice']['default_due_days'] = (int)V::int($b['invoice'], 'default_due_days', 0, 365, false, 30);
             $new['invoice']['note'] = (string)V::str($b['invoice'], 'note', 500, false);
+        }
+        if (isset($b['stock']) && is_array($b['stock']) && array_key_exists('allow_negative', $b['stock'])) {
+            $new['stock']['allow_negative'] = (bool)V::bool($b['stock'], 'allow_negative');
         }
         DB::exec('UPDATE tenants SET settings=? WHERE id=?', [Util::json($new), $tid]);
         if (isset($b['company_name']) || isset($b['phone']) || isset($b['name'])) {

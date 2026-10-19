@@ -6,6 +6,9 @@ namespace FB;
 /** Paylaşılan finans hesapları. Bakiyeler her zaman defter (transactions) kayıtlarından hesaplanır. */
 final class Fin
 {
+    /** Kalem başına ödenen tutar (aktif dağıtımlar, geçerli para hareketleri). Tek tenant yer tutucusu (?) içerir; takma ad çağıranda verilir. */
+    public const PAID_SUB = "(SELECT a.entry_id, SUM(a.amount_minor) paid FROM payment_allocations a JOIN transactions pt ON pt.id=a.txn_id WHERE a.tenant_id=? AND a.status='active' AND pt.status='posted' GROUP BY a.entry_id)";
+
     public const DEFAULT_CATEGORIES = [
         'income' => ['Satış Geliri', 'Hizmet Geliri', 'Kira Geliri', 'Faiz Geliri', 'Diğer Gelirler'],
         'expense' => ['Yakıt', 'Ulaşım', 'Yemek', 'Malzeme', 'İşçilik', 'Taşeron', 'Kira', 'Abonelik', 'Banka Masrafı', 'Vergi', 'Sigorta', 'Diğer Giderler'],
@@ -64,7 +67,7 @@ final class Fin
             $p[] = $f['workspace_id'];
         }
         $sql = "SELECT e.*, COALESCE(x.paid,0) AS paid_minor, e.amount_minor - COALESCE(x.paid,0) AS remaining_minor
-                FROM entries e LEFT JOIN (SELECT entry_id, SUM(amount_minor) paid FROM transactions WHERE tenant_id=? AND status='posted' AND entry_id IS NOT NULL GROUP BY entry_id) x ON x.entry_id=e.id
+                FROM entries e LEFT JOIN (SELECT a.entry_id, SUM(a.amount_minor) paid FROM payment_allocations a JOIN transactions pt ON pt.id=a.txn_id WHERE a.tenant_id=? AND a.status='active' AND pt.status='posted' GROUP BY a.entry_id) x ON x.entry_id=e.id
                 WHERE " . implode(' AND ', $w);
         return DB::all($sql, [$tid, ...$p]);
     }
@@ -81,7 +84,9 @@ final class Fin
             $c = $e['currency'];
             $out[$c] ??= ['receivable' => 0, 'payable' => 0, 'overdue_receivable' => 0, 'overdue_payable' => 0, 'due7_payable' => 0, 'due7_receivable' => 0];
             $out[$c][$e['kind']] += $rem;
-            if ($e['due_date'] < $today) {
+            if ($e['due_date'] === null) {
+                // vadesiz kalem: gecikmiş veya yaklaşan sayılmaz
+            } elseif ($e['due_date'] < $today) {
                 $out[$c]['overdue_' . $e['kind']] += $rem;
             } elseif ($e['due_date'] <= Util::addDays($today, 7)) {
                 $out[$c]['due7_' . $e['kind']] += $rem;
@@ -162,10 +167,30 @@ final class Fin
         });
     }
 
+    /**
+     * Başka kayıt tarafından kullanılmayan tanım/kart kaydını siler; kullanılıyorsa neden açıklanır ve arşivleme önerilir.
+     * @param array<int,array{0:string,1:string}> $refs [tablo, sütun] çiftleri (tenant_id sütunu olan tablolar)
+     */
+    public static function deleteIfUnused(string $table, int $id, int $tid, string $label, array $refs): never
+    {
+        $row = DB::one("SELECT * FROM `$table` WHERE id=? AND tenant_id=?", [$id, $tid]);
+        if (!$row) {
+            throw new ApiError('not_found', "$label bulunamadı.", 404);
+        }
+        foreach ($refs as [$tb, $col]) {
+            if (DB::val("SELECT 1 FROM `$tb` WHERE tenant_id=? AND `$col`=? LIMIT 1", [$tid, $id])) {
+                throw new ApiError('in_use', "$label başka kayıtlarda kullanıldığı için silinemez; geçmiş korunur. Bunun yerine arşivleyin (yeni işlemlerde görünmez).", 409);
+            }
+        }
+        DB::exec("DELETE FROM `$table` WHERE id=? AND tenant_id=?", [$id, $tid]);
+        Audit::log('data', $table . '_deleted', ['tenant' => $tid, 'entity' => $table, 'id' => $id, 'details' => ['name' => $row['name'] ?? null]]);
+        Res::ok();
+    }
+
     /** Tüm müşteri verisini JSON dışa aktarım için toplar. */
     public static function exportTenant(int $tid): array
     {
-        $tables = ['workspaces', 'accounts', 'categories', 'contacts', 'projects', 'project_quotes', 'project_milestones', 'entries', 'transactions', 'invoices', 'invoice_lines', 'stock_items', 'warehouses', 'stock_movements', 'recurring_templates', 'cards', 'card_purchases', 'card_installments', 'loans', 'loan_installments', 'statement_lines', 'budgets', 'fx_rates'];
+        $tables = ['workspaces', 'accounts', 'categories', 'contacts', 'projects', 'project_quotes', 'project_milestones', 'entries', 'transactions', 'invoices', 'invoice_lines', 'stock_items', 'warehouses', 'stock_movements', 'recurring_templates', 'cards', 'card_purchases', 'card_installments', 'loans', 'loan_installments', 'statement_lines', 'budgets', 'fx_rates', 'payment_allocations'];
         $out = ['exported_at' => Util::now(), 'tenant_id' => $tid];
         foreach ($tables as $t) {
             $out[$t] = DB::all("SELECT * FROM `$t` WHERE tenant_id=? ORDER BY id", [$tid]);

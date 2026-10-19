@@ -15,10 +15,10 @@ final class Pl
     {
         $parts = [];
         $p = [];
-        $parts[] = "SELECT txn_date d, currency, 'income' k, amount_minor - vat_minor net, vat_minor vat, vat_rate_bp rate, 'txn' src, workspace_id ws, project_id proj, category_id cat, contact_id contact, id ref
+        $parts[] = "SELECT txn_date d, currency, 'income' k, amount_minor - vat_minor net, vat_minor vat, vat_rate_bp rate, 'txn' src, COALESCE(for_workspace_id, workspace_id) ws, project_id proj, category_id cat, contact_id contact, id ref
                     FROM transactions WHERE tenant_id=? AND status='posted' AND kind='income'";
         $p[] = $tid;
-        $parts[] = "SELECT txn_date, currency, 'expense', amount_minor - vat_minor, vat_minor, vat_rate_bp, 'txn', workspace_id, project_id, category_id, contact_id, id
+        $parts[] = "SELECT txn_date, currency, 'expense', amount_minor - vat_minor, vat_minor, vat_rate_bp, 'txn', COALESCE(for_workspace_id, workspace_id), project_id, category_id, contact_id, id
                     FROM transactions WHERE tenant_id=? AND status='posted' AND kind='expense'";
         $p[] = $tid;
         $parts[] = "SELECT issue_date, currency, 'income', subtotal_minor, vat_minor, 0, 'invoice', workspace_id, project_id, NULL, contact_id, id
@@ -120,7 +120,7 @@ final class Pl
               FROM transactions WHERE tenant_id=? AND project_id=? AND status='posted' AND currency=?", [$tid, $pid, $proj['currency']]);
         $pend = DB::one("SELECT COALESCE(SUM(CASE WHEN e.kind='receivable' THEN e.amount_minor - COALESCE(x.paid,0) END),0) rec,
                                 COALESCE(SUM(CASE WHEN e.kind='payable' THEN e.amount_minor - COALESCE(x.paid,0) END),0) pay
-                         FROM entries e LEFT JOIN (SELECT entry_id, SUM(amount_minor) paid FROM transactions WHERE tenant_id=? AND status='posted' AND entry_id IS NOT NULL GROUP BY entry_id) x ON x.entry_id=e.id
+                         FROM entries e LEFT JOIN (SELECT a.entry_id, SUM(a.amount_minor) paid FROM payment_allocations a JOIN transactions pt ON pt.id=a.txn_id WHERE a.tenant_id=? AND a.status='active' AND pt.status='posted' GROUP BY a.entry_id) x ON x.entry_id=e.id
                          WHERE e.tenant_id=? AND e.project_id=? AND e.status='open' AND e.currency=?", [$tid, $tid, $pid, $proj['currency']]);
         return [
             'currency' => $proj['currency'], 'contract_minor' => (int)$proj['contract_minor'], 'est_cost_minor' => (int)$proj['est_cost_minor'],

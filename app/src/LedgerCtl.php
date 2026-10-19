@@ -14,12 +14,14 @@ final class LedgerCtl
         $r->add('POST', '/transactions', fn($q, $p, $tid) => self::txnCreate($q, $tid, null), $ti);
         $r->add('POST', '/transactions/{id}/void', fn($q, $p, $tid) => self::txnVoid($q, (int)$p['id'], $tid), $t);
         $r->add('POST', '/transactions/{id}/replace', fn($q, $p, $tid) => self::txnReplace($q, (int)$p['id'], $tid), $ti);
+        $r->add('POST', '/transactions/{id}/to-collection', fn($q, $p, $tid) => self::toCollection((int)$p['id'], $tid), $t);
         $r->add('POST', '/transfers', fn($q, $p, $tid) => self::transfer($q, $tid), $ti);
         $r->add('POST', '/fx', fn($q, $p, $tid) => self::fx($q, $tid), $ti);
         $r->add('GET', '/entries', fn($q, $p, $tid) => self::entryList($q, $tid), $t);
         $r->add('POST', '/entries', fn($q, $p, $tid) => self::entryCreate($q, $tid), $ti);
         $r->add('PATCH', '/entries/{id}', fn($q, $p, $tid) => self::entryUpdate($q, (int)$p['id'], $tid), $t);
         $r->add('POST', '/entries/{id}/settle', fn($q, $p, $tid) => self::settle($q, (int)$p['id'], $tid), $ti);
+        $r->add('DELETE', '/entries/{id}', fn($q, $p, $tid) => self::entryDelete($q, (int)$p['id'], $tid), $t);
         $r->add('POST', '/entries/{id}/cancel', fn($q, $p, $tid) => self::entryCancel($q, (int)$p['id'], $tid), $t);
         $r->add('GET', '/recurring', fn($q, $p, $tid) => Res::ok(['templates' => DB::all('SELECT * FROM recurring_templates WHERE tenant_id=? ORDER BY active DESC, next_date', [$tid])]), $t);
         $r->add('POST', '/recurring', fn($q, $p, $tid) => self::recurringCreate($q, $tid), $ti);
@@ -79,7 +81,7 @@ final class LedgerCtl
             $w[] = "$alias.workspace_id IN (SELECT id FROM workspaces WHERE tenant_id=? AND kind=?)";
             array_push($p, $tid, $q['scope']);
         }
-        if (!empty($q['kind']) && in_array($q['kind'], ['income', 'expense', 'collection', 'payment', 'transfer', 'fx', 'card_payment', 'loan_payment', 'loan_proceeds', 'adjustment'], true)) {
+        if (!empty($q['kind']) && in_array($q['kind'], ['income', 'expense', 'collection', 'payment', 'transfer', 'fx', 'card_payment', 'loan_payment', 'loan_proceeds', 'adjustment', 'owner_in', 'owner_out'], true)) {
             $w[] = "$alias.kind=?";
             $p[] = $q['kind'];
         }
@@ -101,8 +103,32 @@ final class LedgerCtl
         $w[] = "$alias.status=?";
         $p[] = ($q['status'] ?? 'posted') === 'voided' ? 'voided' : 'posted';
         if (!empty($q['q'])) {
-            $w[] = "$alias.description LIKE ?";
-            $p[] = '%' . str_replace(['%', '_'], ['\\%', '\\_'], (string)$q['q']) . '%';
+            $l = '%' . str_replace(['%', '_'], ['\\%', '\\_'], (string)$q['q']) . '%';
+            $w[] = "($alias.description LIKE ? OR $alias.reason LIKE ? OR $alias.reference LIKE ? OR EXISTS (SELECT 1 FROM contacts qc WHERE qc.id=$alias.contact_id AND qc.name LIKE ?))";
+            array_push($p, $l, $l, $l, $l);
+        }
+        if (!empty($q['amount_min'])) {
+            $w[] = "$alias.amount_minor>=?";
+            $p[] = (int)$q['amount_min'];
+        }
+        if (!empty($q['amount_max'])) {
+            $w[] = "$alias.amount_minor<=?";
+            $p[] = (int)$q['amount_max'];
+        }
+        if (!empty($q['created_by'])) {
+            $w[] = "$alias.created_by=?";
+            $p[] = (int)$q['created_by'];
+        }
+        if (!empty($q['method']) && in_array($q['method'], array_keys(PayCtl::METHODS), true)) {
+            $w[] = "$alias.method=?";
+            $p[] = $q['method'];
+        }
+        if (!empty($q['invoice_id']) || !empty($q['entry_id'])) {
+            $w[] = "EXISTS (SELECT 1 FROM payment_allocations fa JOIN entries fe ON fe.id=fa.entry_id WHERE fa.txn_id=$alias.id AND fa.status='active' AND " . (!empty($q['entry_id']) ? 'fa.entry_id=?' : 'fe.invoice_id=?') . ')';
+            $p[] = (int)(!empty($q['entry_id']) ? $q['entry_id'] : $q['invoice_id']);
+        }
+        if (($q['personal'] ?? '') === '1') {
+            $w[] = "$alias.for_workspace_id IS NOT NULL";
         }
         return [implode(' AND ', $w), $p];
     }
@@ -113,7 +139,8 @@ final class LedgerCtl
         $limit = min(500, max(1, (int)($r->query['limit'] ?? 100)));
         $off = max(0, (int)($r->query['offset'] ?? 0));
         $rows = DB::all("SELECT t.id,t.txn_date,t.kind,t.direction,t.amount_minor,t.vat_minor,t.vat_rate_bp,t.currency,t.description,t.status,t.account_id,a.name AS account_name,t.workspace_id,
-                         t.category_id,c.name AS category_name,t.contact_id,ct.name AS contact_name,t.project_id,t.entry_id,t.transfer_group,t.void_reason,t.replaces_id,
+                         t.category_id,c.name AS category_name,t.contact_id,ct.name AS contact_name,t.project_id,t.transfer_group,t.void_reason,t.replaces_id,t.reason,t.reference,t.method,t.for_workspace_id,t.created_by,
+                         COALESCE((SELECT SUM(pa.amount_minor) FROM payment_allocations pa WHERE pa.txn_id=t.id AND pa.status='active'),0) AS allocated_minor,
                          (SELECT COUNT(*) FROM documents d WHERE d.tenant_id=t.tenant_id AND d.entity='transaction' AND d.entity_id=t.id AND d.deleted_at IS NULL) AS doc_count
                          FROM transactions t JOIN accounts a ON a.id=t.account_id LEFT JOIN categories c ON c.id=t.category_id LEFT JOIN contacts ct ON ct.id=t.contact_id
                          WHERE $w ORDER BY t.txn_date DESC, t.id DESC LIMIT $limit OFFSET $off", $p);
@@ -124,7 +151,7 @@ final class LedgerCtl
         }
         $count = (int)DB::val("SELECT COUNT(*) FROM transactions t WHERE $w", $p);
         foreach ($rows as &$x) {
-            foreach (['id', 'amount_minor', 'vat_minor', 'vat_rate_bp', 'account_id', 'workspace_id', 'doc_count'] as $k) {
+            foreach (['id', 'amount_minor', 'vat_minor', 'vat_rate_bp', 'account_id', 'workspace_id', 'doc_count', 'allocated_minor'] as $k) {
                 $x[$k] = (int)$x[$k];
             }
         }
@@ -141,6 +168,14 @@ final class LedgerCtl
     {
         $b = $r->body;
         $kind = (string)V::enum($b, 'kind', ['income', 'expense']);
+        // KÖK NEDEN DÜZELTMESİ: cari seçilerek girilen gelir, bağımsız gelir değil müşteri tahsilatı/avansıdır; cari hesaba yazılmalıdır.
+        // Gelir (kâr) fatura ile tahakkuk eder; aynı tutar ikinci kez gelir sayılmaz. Bilerek bağımsız gelir isteniyorsa standalone=true.
+        if ($kind === 'income' && $replaces === null && !empty($b['contact_id']) && empty($b['standalone'])) {
+            $res = PayCtl::record($tid, ['kind' => 'collection', 'account_id' => $b['account_id'] ?? null, 'amount_minor' => $b['amount_minor'] ?? null, 'date' => $b['txn_date'] ?? Util::today(),
+                'contact_id' => $b['contact_id'], 'project_id' => $b['project_id'] ?? null, 'description' => $b['description'] ?? null, 'reason' => $b['reason'] ?? null, 'reference' => $b['reference'] ?? null,
+                'method' => $b['method'] ?? null, 'allocations' => $b['allocations'] ?? [], 'force' => $b['force'] ?? null]);
+            return [$res['id'], $res['unallocated_minor'] > 0 ? 'Tutar müşteri avansı olarak cari hesaba işlendi (gelir sayılmadı; fatura ile eşleştirebilirsiniz).' : null];
+        }
         $acc = Fin::ownedId('accounts', V::id($b['account_id'] ?? null, 'account_id'), $tid, 'account_id', true);
         [$gross, $vat, $rate] = self::vatCalc($b);
         $id = null;
@@ -186,6 +221,20 @@ final class LedgerCtl
         Res::ok(['id' => $res[0], 'warning' => $res[1]], 201);
     }
 
+    /** Eski hatalı kayıt: cariye bağlı bağımsız gelir → müşteri tahsilatı/avansı (para hareketi aynı kalır, gelir toplamından düşer). */
+    private static function toCollection(int $id, int $tid): never
+    {
+        DB::tx(function () use ($id, $tid) {
+            $t = DB::one('SELECT * FROM transactions WHERE id=? AND tenant_id=? FOR UPDATE', [$id, $tid]);
+            if (!$t || $t['kind'] !== 'income' || $t['status'] !== 'posted' || $t['contact_id'] === null) {
+                throw new ApiError('invalid_state', 'Yalnızca cariye bağlı, aktif gelir kayıtları tahsilata çevrilebilir.', 409);
+            }
+            DB::exec("UPDATE transactions SET kind='collection', vat_minor=0, vat_rate_bp=0, category_id=NULL WHERE id=? AND tenant_id=?", [$id, $tid]);
+            Audit::log('data', 'income_converted_to_collection', ['tenant' => $tid, 'entity' => 'transaction', 'id' => $id, 'details' => ['amount_minor' => (int)$t['amount_minor'], 'contact_id' => (int)$t['contact_id'], 'was_vat_minor' => (int)$t['vat_minor']]]);
+        });
+        Res::ok();
+    }
+
     // ---- transfer / döviz ----
     private static function transfer(Req $r, int $tid): never
     {
@@ -195,8 +244,10 @@ final class LedgerCtl
         if ($from === $to) {
             throw new ApiError('validation', 'Kaynak ve hedef hesap farklı olmalı.', 422, 'to_account_id');
         }
-        $a = DB::one('SELECT currency FROM accounts WHERE id=?', [$from]);
-        $c = DB::one('SELECT currency FROM accounts WHERE id=?', [$to]);
+        $a = DB::one('SELECT a.currency, w.kind AS wk FROM accounts a JOIN workspaces w ON w.id=a.workspace_id WHERE a.id=?', [$from]);
+        $c = DB::one('SELECT a.currency, w.kind AS wk FROM accounts a JOIN workspaces w ON w.id=a.workspace_id WHERE a.id=?', [$to]);
+        // şahsi ↔ işletme aktarımı sahip hareketidir (ortak cari): gelir/gider değildir, sermaye/borç ilişkisi olarak izlenir
+        $tkind = $a['wk'] === 'personal' && $c['wk'] === 'business' ? 'owner_in' : ($a['wk'] === 'business' && $c['wk'] === 'personal' ? 'owner_out' : 'transfer');
         if ($a['currency'] !== $c['currency']) {
             throw new ApiError('currency_mismatch', 'Farklı para birimli hesaplar arasında döviz işlemi kullanın.', 422, 'to_account_id');
         }
@@ -204,10 +255,10 @@ final class LedgerCtl
         $date = (string)V::date($b + ['date' => Util::today()], 'date');
         $desc = V::str($b, 'description', 300, false) ?? 'Transfer';
         $g = Util::rid();
-        $ids = DB::tx(function () use ($tid, $from, $to, $amt, $date, $desc, $g) {
-            $o = Fin::post($tid, ['account_id' => $from, 'direction' => 'out', 'kind' => 'transfer', 'amount_minor' => $amt, 'txn_date' => $date, 'description' => $desc, 'transfer_group' => $g]);
-            $i = Fin::post($tid, ['account_id' => $to, 'direction' => 'in', 'kind' => 'transfer', 'amount_minor' => $amt, 'txn_date' => $date, 'description' => $desc, 'transfer_group' => $g]);
-            Audit::log('data', 'transfer_created', ['tenant' => $tid, 'entity' => 'transfer', 'id' => $g, 'details' => ['from' => $from, 'to' => $to, 'amount_minor' => $amt]]);
+        $ids = DB::tx(function () use ($tid, $from, $to, $amt, $date, $desc, $g, $tkind) {
+            $o = Fin::post($tid, ['account_id' => $from, 'direction' => 'out', 'kind' => $tkind, 'amount_minor' => $amt, 'txn_date' => $date, 'description' => $desc, 'transfer_group' => $g]);
+            $i = Fin::post($tid, ['account_id' => $to, 'direction' => 'in', 'kind' => $tkind, 'amount_minor' => $amt, 'txn_date' => $date, 'description' => $desc, 'transfer_group' => $g]);
+            Audit::log('data', 'transfer_created', ['tenant' => $tid, 'entity' => 'transfer', 'id' => $g, 'details' => ['from' => $from, 'to' => $to, 'amount_minor' => $amt, 'kind' => $tkind]]);
             return [$o, $i];
         });
         Res::ok(['group' => $g, 'ids' => $ids], 201);
@@ -307,14 +358,14 @@ final class LedgerCtl
         $w[] = $status === 'cancelled' ? "e.status='cancelled'" : "e.status='open'";
         $rows = DB::all("SELECT e.*, c.name AS contact_name, pr.name AS project_name, w.name AS workspace_name, w.kind AS workspace_kind, COALESCE(x.paid,0) AS paid_minor, e.amount_minor - COALESCE(x.paid,0) AS remaining_minor
                          FROM entries e LEFT JOIN contacts c ON c.id=e.contact_id LEFT JOIN projects pr ON pr.id=e.project_id JOIN workspaces w ON w.id=e.workspace_id
-                         LEFT JOIN (SELECT entry_id, SUM(amount_minor) paid FROM transactions WHERE tenant_id=? AND status='posted' AND entry_id IS NOT NULL GROUP BY entry_id) x ON x.entry_id=e.id
-                         WHERE " . implode(' AND ', $w) . " $having ORDER BY e.due_date, e.priority, e.id LIMIT 1000", [$tid, ...$p]);
+                         LEFT JOIN (SELECT a.entry_id, SUM(a.amount_minor) paid FROM payment_allocations a JOIN transactions pt ON pt.id=a.txn_id WHERE a.tenant_id=? AND a.status='active' AND pt.status='posted' GROUP BY a.entry_id) x ON x.entry_id=e.id
+                         WHERE " . implode(' AND ', $w) . " $having ORDER BY (e.due_date IS NULL), e.due_date, e.priority, e.id LIMIT 1000", [$tid, ...$p]);
         $sums = [];
         foreach ($rows as &$e) {
             foreach (['id', 'amount_minor', 'paid_minor', 'remaining_minor', 'workspace_id', 'priority', 'affects_pl'] as $k) {
                 $e[$k] = (int)$e[$k];
             }
-            $e['days_overdue'] = ($e['remaining_minor'] > 0 && $e['due_date'] < $today) ? (int)((strtotime($today) - strtotime($e['due_date'])) / 86400) : 0;
+            $e['days_overdue'] = ($e['remaining_minor'] > 0 && $e['due_date'] !== null && $e['due_date'] < $today) ? (int)((strtotime($today) - strtotime($e['due_date'])) / 86400) : 0;
             $e['state'] = $e['status'] === 'cancelled' ? 'cancelled' : ($e['remaining_minor'] <= 0 ? 'paid' : ($e['days_overdue'] > 0 ? 'overdue' : ($e['paid_minor'] > 0 ? 'partial' : 'open')));
             $e['rescheduled'] = $e['due_date'] !== $e['original_due_date'];
             if ($e['remaining_minor'] > 0) {
@@ -338,8 +389,11 @@ final class LedgerCtl
             $kind = 'payable';
         }
         $amount = (int)V::amount($b, 'amount_minor');
-        $due = (string)V::date($b, 'due_date');
+        $due = V::date($b, 'due_date', false); // vade isteğe bağlı: boş = vadesiz
         $n = (int)V::int($b, 'installments', 1, 120, false, 1);
+        if ($due === null && $n > 1) {
+            throw new ApiError('validation', 'Taksitli kayıt için vade tarihi gerekli.', 422, 'due_date');
+        }
         $cur = V::cur($b);
         $contact = Fin::ownedId('contacts', V::id($b['contact_id'] ?? null, 'contact_id', false), $tid, 'contact_id');
         $project = Fin::ownedId('projects', V::id($b['project_id'] ?? null, 'project_id', false), $tid, 'project_id');
@@ -355,13 +409,13 @@ final class LedgerCtl
             $ids = [];
             for ($i = 1; $i <= $n; $i++) {
                 $amt = $i === $n ? $amount - $base * ($n - 1) : $base;
-                $d = Util::addMonths($due, $i - 1, (int)substr($due, 8, 2));
+                $d = $due === null ? null : Util::addMonths($due, $i - 1, (int)substr($due, 8, 2));
                 $ids[] = DB::insert('entries', [
                     'tenant_id' => $tid, 'workspace_id' => $ws, 'kind' => $kind, 'source' => $source, 'contact_id' => $contact, 'project_id' => $project, 'category_id' => $cat,
                     'group_id' => $group, 'seq' => $n > 1 ? $i : null, 'seq_total' => $n > 1 ? $n : null,
                     'title' => $n > 1 ? "$title ($i/$n)" : $title, 'provider' => V::str($b, 'provider', 120, false), 'period' => V::str($b, 'period', 20, false),
                     'currency' => $cur, 'amount_minor' => $amt, 'due_date' => $d, 'original_due_date' => $d, 'priority' => (int)V::int($b, 'priority', 1, 3, false, 2),
-                    'affects_pl' => $affects, 'note' => V::str($b, 'note', 2000, false), 'created_at' => Util::now(),
+                    'planned_date' => V::date($b, 'planned_date', false), 'affects_pl' => $affects, 'note' => V::str($b, 'note', 2000, false), 'created_at' => Util::now(),
                 ]);
             }
             Audit::log('data', 'entry_created', ['tenant' => $tid, 'entity' => 'entry', 'id' => $ids[0], 'details' => ['kind' => $kind, 'amount_minor' => $amount, 'installments' => $n]]);
@@ -372,7 +426,7 @@ final class LedgerCtl
 
     private static function entryRow(int $id, int $tid, bool $lock = false): array
     {
-        $e = DB::one('SELECT e.*, COALESCE((SELECT SUM(amount_minor) FROM transactions WHERE entry_id=e.id AND status=\'posted\'),0) AS paid_minor FROM entries e WHERE e.id=? AND e.tenant_id=?' . ($lock ? ' FOR UPDATE' : ''), [$id, $tid]);
+        $e = DB::one('SELECT e.*, COALESCE((SELECT SUM(pa.amount_minor) FROM payment_allocations pa JOIN transactions pt ON pt.id=pa.txn_id WHERE pa.entry_id=e.id AND pa.status=\'active\' AND pt.status=\'posted\'),0) AS paid_minor FROM entries e WHERE e.id=? AND e.tenant_id=?' . ($lock ? ' FOR UPDATE' : ''), [$id, $tid]);
         if (!$e) {
             throw new ApiError('not_found', 'Kalem bulunamadı.', 404);
         }
@@ -390,23 +444,46 @@ final class LedgerCtl
         if (isset($b['title'])) {
             $u['title'] = V::str($b, 'title', 200);
         }
-        if (array_key_exists('note', $b)) {
-            $u['note'] = V::str($b, 'note', 2000, false);
+        foreach (['note' => 2000, 'provider' => 120, 'period' => 20] as $k => $m) {
+            if (array_key_exists($k, $b)) {
+                $u[$k] = V::str($b, $k, $m, false);
+            }
         }
         if (isset($b['priority'])) {
             $u['priority'] = V::int($b, 'priority', 1, 3);
         }
-        if (isset($b['due_date'])) {
-            $u['due_date'] = V::date($b, 'due_date');
+        if (array_key_exists('planned_date', $b)) {
+            $u['planned_date'] = V::date($b, 'planned_date', false); // boş = tarih girilmemiş
+        }
+        if (array_key_exists('due_date', $b)) {
+            $u['due_date'] = V::date($b, 'due_date', false); // boş bırakılırsa vadesiz
+            if ($u['due_date'] !== null && $e['original_due_date'] === null) {
+                $u['original_due_date'] = $u['due_date'];
+            }
         }
         foreach (['contact_id' => 'contacts', 'project_id' => 'projects'] as $k => $tb) {
             if (array_key_exists($k, $b)) {
                 $u[$k] = Fin::ownedId($tb, V::id($b[$k], $k, false), $tid, $k);
+                if ($k === 'contact_id' && $u[$k] !== ($e[$k] !== null ? (int)$e[$k] : null) && self::allocCount($tid, $id) > 0) {
+                    throw new ApiError('has_payments', 'Ödeme dağıtımı olan kalemin carisi değiştirilemez; önce dağıtımları geri alın.', 409, $k);
+                }
             }
+        }
+        if (array_key_exists('category_id', $b)) {
+            $u['category_id'] = self::category(V::id($b['category_id'], 'category_id', false), $tid, $e['kind'] === 'receivable' ? 'income' : 'expense');
+        }
+        if ($e['source'] !== 'invoice' && array_key_exists('affects_pl', $b) && $e['source'] !== 'personal_bill') {
+            $u['affects_pl'] = V::bool($b, 'affects_pl');
+        }
+        if (isset($b['currency']) && $b['currency'] !== $e['currency']) {
+            if ($e['source'] === 'invoice' || self::allocCount($tid, $id) > 0) {
+                throw new ApiError('has_payments', 'Para birimi, ödeme dağıtımı olan veya fatura kaynaklı kalemde değiştirilemez.', 409, 'currency');
+            }
+            $u['currency'] = V::cur($b);
         }
         if (isset($b['amount_minor'])) {
             if ($e['source'] === 'invoice') {
-                throw new ApiError('invalid_state', 'Fatura kaleminin tutarı faturadan gelir.', 409);
+                throw new ApiError('invalid_state', 'Fatura kaleminin tutarı faturadan gelir; faturayı düzenleyin.', 409);
             }
             $amt = (int)V::amount($b, 'amount_minor');
             if ($amt < (int)$e['paid_minor']) {
@@ -416,8 +493,32 @@ final class LedgerCtl
         }
         if ($u) {
             DB::update('entries', $u, 'id=? AND tenant_id=?', [$id, $tid]);
-            Audit::log('data', isset($u['due_date']) ? 'entry_rescheduled' : 'entry_updated', ['tenant' => $tid, 'entity' => 'entry', 'id' => $id, 'details' => ['before' => array_intersect_key($e, $u), 'after' => $u]]);
+            Audit::log('data', array_key_exists('due_date', $u) ? 'entry_rescheduled' : 'entry_updated', ['tenant' => $tid, 'entity' => 'entry', 'id' => $id, 'details' => ['before' => array_intersect_key($e, $u), 'after' => $u]]);
         }
+        Res::ok();
+    }
+
+    public static function allocCount(int $tid, int $entryId): int
+    {
+        return (int)DB::val('SELECT COUNT(*) FROM payment_allocations WHERE tenant_id=? AND entry_id=?', [$tid, $entryId]);
+    }
+
+    /** Silme: yalnızca hiç ödeme dağıtımı olmayan, fatura kaynaklı olmayan kalem. Aksi halde iptal veya dağıtım geri alma yolu gösterilir. */
+    private static function entryDelete(Req $r, int $id, int $tid): never
+    {
+        DB::tx(function () use ($id, $tid) {
+            $e = self::entryRow($id, $tid, true);
+            if ($e['source'] === 'invoice') {
+                throw new ApiError('invalid_state', 'Fatura kalemi faturayla birlikte silinir veya iptal edilir.', 409);
+            }
+            if (self::allocCount($tid, $id) > 0) {
+                throw new ApiError('has_payments', 'Ödeme dağıtım geçmişi olan kalem silinemez; “İptal et” kullanın (geçmiş korunur).', 409);
+            }
+            DB::exec('DELETE FROM project_milestones WHERE entry_id=? AND tenant_id=?', [$id, $tid]);
+            DB::exec('DELETE FROM entries WHERE id=? AND tenant_id=?', [$id, $tid]);
+            DB::exec("UPDATE documents SET deleted_at=? WHERE tenant_id=? AND entity='entry' AND entity_id=? AND deleted_at IS NULL", [Util::now(), $tid, $id]);
+            Audit::log('data', 'entry_deleted', ['tenant' => $tid, 'entity' => 'entry', 'id' => $id, 'details' => ['snapshot' => array_intersect_key($e, array_flip(['kind', 'source', 'title', 'amount_minor', 'currency', 'due_date', 'contact_id', 'workspace_id']))]]);
+        });
         Res::ok();
     }
 
@@ -442,32 +543,20 @@ final class LedgerCtl
     private static function settle(Req $r, int $id, int $tid): never
     {
         $b = $r->body;
-        $acc = Fin::ownedId('accounts', V::id($b['account_id'] ?? null, 'account_id'), $tid, 'account_id', true);
+        $e = self::entryRow($id, $tid);
+        if ($e['status'] !== 'open') {
+            throw new ApiError('invalid_state', 'İptal edilmiş kalem için işlem yapılamaz.', 409);
+        }
+        $isRec = $e['kind'] === 'receivable';
         $amt = (int)V::amount($b, 'amount_minor');
-        $date = (string)V::date($b + ['date' => Util::today()], 'date');
-        $res = DB::tx(function () use ($tid, $id, $acc, $amt, $date, $b) {
-            $e = self::entryRow($id, $tid, true);
-            if ($e['status'] !== 'open') {
-                throw new ApiError('invalid_state', 'İptal edilmiş kalem için işlem yapılamaz.', 409);
-            }
-            $a = DB::one('SELECT currency FROM accounts WHERE id=? AND tenant_id=?', [$acc, $tid]);
-            if ($a['currency'] !== $e['currency']) {
-                throw new ApiError('currency_mismatch', "Kalem para birimi {$e['currency']}; aynı para biriminde bir hesap seçin.", 422, 'account_id');
-            }
-            $remaining = (int)$e['amount_minor'] - (int)$e['paid_minor'];
-            if ($amt > $remaining) {
-                throw new ApiError('overpayment', 'Tutar kalan tutardan büyük olamaz.', 422, 'amount_minor', ['remaining_minor' => $remaining]);
-            }
-            $isRec = $e['kind'] === 'receivable';
-            $tx = Fin::post($tid, [
-                'account_id' => $acc, 'direction' => $isRec ? 'in' : 'out', 'kind' => $isRec ? 'collection' : 'payment', 'amount_minor' => $amt, 'txn_date' => $date,
-                'description' => V::str($b, 'description', 300, false) ?? (($isRec ? 'Tahsilat: ' : 'Ödeme: ') . $e['title']),
-                'entry_id' => $id, 'contact_id' => $e['contact_id'], 'project_id' => $e['project_id'],
-            ]);
-            Audit::log('data', $isRec ? 'collection_created' : 'payment_created', ['tenant' => $tid, 'entity' => 'entry', 'id' => $id, 'details' => ['txn' => $tx, 'amount_minor' => $amt]]);
-            return ['id' => $tx, 'remaining_minor' => $remaining - $amt];
-        });
-        Res::ok($res, 201);
+        $res = PayCtl::record($tid, [
+            'kind' => $isRec ? 'collection' : 'payment', 'account_id' => $b['account_id'] ?? null, 'amount_minor' => $amt, 'date' => $b['date'] ?? Util::today(),
+            'description' => V::str($b, 'description', 300, false) ?? (($isRec ? 'Tahsilat: ' : 'Ödeme: ') . $e['title']),
+            'contact_id' => $e['contact_id'], 'project_id' => $e['project_id'], 'reason' => $b['reason'] ?? null, 'reference' => $b['reference'] ?? null, 'method' => $b['method'] ?? null,
+            'for_workspace_id' => $b['for_workspace_id'] ?? null, 'force' => $b['force'] ?? null,
+            'allocations' => [['entry_id' => $id, 'amount_minor' => $amt]],
+        ]);
+        Res::ok(['id' => $res['id'], 'remaining_minor' => (int)$e['amount_minor'] - (int)$e['paid_minor'] - $amt], 201);
     }
 
     // ---- tekrarlayan şablonlar (yalnızca PLAN üretir; banka bakiyesine dokunmaz) ----

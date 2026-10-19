@@ -106,7 +106,7 @@ final class ExportCtl
     /** @return array{0:string,1:array,2:array} */
     private static function table(string $name, array $q, int $tid): array
     {
-        $kinds = ['income' => 'Gelir', 'expense' => 'Gider', 'collection' => 'Tahsilat', 'payment' => 'Ödeme', 'transfer' => 'Transfer', 'fx' => 'Döviz', 'card_payment' => 'Kart ödemesi', 'loan_payment' => 'Kredi taksiti', 'loan_proceeds' => 'Kredi kullandırım', 'adjustment' => 'Bakiye düzeltme'];
+        $kinds = ['income' => 'Gelir', 'expense' => 'Gider', 'collection' => 'Tahsilat', 'payment' => 'Ödeme', 'transfer' => 'Transfer', 'owner_in' => 'İşletmeye para koyma', 'owner_out' => 'İşletmeden para çekme', 'fx' => 'Döviz', 'card_payment' => 'Kart ödemesi', 'loan_payment' => 'Kredi taksiti', 'loan_proceeds' => 'Kredi kullandırım', 'adjustment' => 'Bakiye düzeltme'];
         switch ($name) {
             case 'transactions':
                 [$w, $p] = LedgerCtl::filters($q, $tid);

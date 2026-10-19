@@ -1,5 +1,6 @@
 // Ortak formlar: gelir/gider, tahsilat/ödeme, transfer, döviz, hesap, alan, cari, alacak-borç, belgeler.
 import { api } from './api.js';
+import { paymentForm } from './forms_pay.js';
 import { state, loadMeta, wsOptions, accOptions, catOptions, contactOptions, projectOptions, vatOptions, accName } from './state.js';
 import { h, formModal, toast, errToast, money, date, todayStr, addDays, confirmDialog, modal, mount, clear, CURRENCIES, dateTime, plain, parseMoney } from './ui.js';
 
@@ -24,11 +25,12 @@ export function txnForm({ kind, tx }, cb) {
       { name: 'vat_mode', label: 'KDV', type: 'select', value: 'included', options: [['included', 'Tutar KDV dahil'], ['excluded', 'Tutar KDV hariç (üstüne eklenir)']] },
       { name: 'contact_id', label: isIncome ? 'Müşteri' : 'Tedarikçi', type: 'select', value: tx ? tx.contact_id : '', options: contactOptions(isIncome ? 'customer' : 'supplier', 'Cari yok') },
       { name: 'project_id', label: 'Proje', type: 'select', value: tx ? tx.project_id : '', options: projectOptions() },
+      ...(isIncome && !tx ? [{ name: 'standalone', label: 'Bağımsız gelir olarak kaydet (müşteri cari hesabına İŞLEME)', type: 'checkbox', full: true, hint: 'Varsayılan: müşteri seçtiyseniz tutar müşteri tahsilatı/avansı olarak cari hesaba işlenir ve gelir sayılmaz (gelir fatura ile oluşur). Yalnızca cari ile ilgisi olmayan gelirlerde işaretleyin.' }] : []),
       { name: 'description', label: 'Açıklama', type: 'textarea', full: true, value: tx ? tx.description : '', max: 300 },
     ],
     extra: tx ? null : h('div', { class: 'field' }, h('label', null, 'Fiş / fatura / belge (isteğe bağlı)'), file, h('div', { class: 'hint' }, 'PDF, JPG, PNG, WEBP — en çok 10 MB')),
     onSubmit: async (v, key) => {
-      const body = { kind, account_id: idv(v.account_id), amount_minor: v.amount_minor, txn_date: v.txn_date, category_id: idv(v.category_id), vat_rate_bp: Number(v.vat_rate_bp), vat_mode: v.vat_mode, contact_id: idv(v.contact_id), project_id: idv(v.project_id), description: v.description };
+      const body = { kind, account_id: idv(v.account_id), amount_minor: v.amount_minor, txn_date: v.txn_date, category_id: idv(v.category_id), vat_rate_bp: Number(v.vat_rate_bp), vat_mode: v.vat_mode, contact_id: idv(v.contact_id), project_id: idv(v.project_id), description: v.description, standalone: !!v.standalone };
       const r = tx ? await api.post(`/transactions/${tx.id}/replace`, body, { idem: key }) : await api.post('/transactions', body, { idem: key });
       if (file.files[0]) {
         const f = new FormData(); f.append('entity', 'transaction'); f.append('entity_id', r.id); f.append('file', file.files[0]);
@@ -41,38 +43,20 @@ export function txnForm({ kind, tx }, cb) {
   return m;
 }
 
+/** Hızlı ödeme/tahsilat: cari + hesap + tutar seçilir; faturalara dağıtım ya da cariye bağımsız kayıt. */
 export async function quickSettle(kind, cb) {
-  let list;
-  try { list = (await api.get('/entries', { kind, status: 'unpaid' })).entries; } catch (e) { return errToast(e); }
-  if (!list.length) return toast(kind === 'receivable' ? 'Tahsil edilecek açık alacak yok.' : 'Ödenecek açık borç yok.');
-  formModal({
-    title: kind === 'receivable' ? 'Tahsilat gir' : 'Ödeme yap', submit: 'Devam', cancel: 'Vazgeç',
-    fields: [{ name: 'id', label: kind === 'receivable' ? 'Hangi alacak?' : 'Hangi borç?', type: 'select', required: true, options: list.map((e) => [e.id, `${e.title} — ${money(e.remaining_minor, e.currency)} (vade ${date(e.due_date)})`]) }],
-    onSubmit: async (v) => { const e = list.find((x) => x.id === Number(v.id)); setTimeout(() => settleForm(e, cb), 50); },
-  });
+  paymentForm({ kind: kind === 'receivable' ? 'collection' : 'payment', cb });
 }
 
+/** Belirli bir kalem (fatura/borç/alacak) için ödeme; formdan “cari hesaba bağımsız” seçeneğine de geçilebilir. */
 export function settleForm(e, cb) {
-  const isRec = e.kind === 'receivable';
-  const accs = accOptions(null, e.currency);
-  if (!accs.length) return toast(`${e.currency} para biriminde bir hesap/kasa yok.`, 'err');
-  formModal({
-    title: (isRec ? 'Tahsilat: ' : 'Ödeme: ') + e.title, submit: isRec ? 'Tahsil et' : 'Öde',
-    note: `Kalan: ${money(e.remaining_minor, e.currency)} — yalnızca kalan tutar düşer.`,
-    fields: [
-      { name: 'account_id', label: isRec ? 'Hangi hesaba girdi?' : 'Hangi hesaptan çıktı?', type: 'select', required: true, options: accs, value: state.meta.settings.default_account_id && accs.some((a) => a[0] === state.meta.settings.default_account_id) ? state.meta.settings.default_account_id : accs[0][0] },
-      { name: 'amount_minor', label: 'Tutar (' + e.currency + ')', type: 'money', required: true, value: e.remaining_minor },
-      { name: 'date', label: 'Tarih', type: 'date', required: true, value: todayStr(), max: addDays(todayStr(), 1) },
-      { name: 'description', label: 'Açıklama', type: 'text', full: true },
-    ],
-    onSubmit: async (v, key) => { await api.post(`/entries/${e.id}/settle`, { account_id: idv(v.account_id), amount_minor: v.amount_minor, date: v.date, description: v.description }, { idem: key }); await done(cb, isRec ? 'Tahsilat kaydedildi' : 'Ödeme kaydedildi')(); },
-  });
+  paymentForm({ entry: e, cb });
 }
 
 export function rescheduleForm(e, cb) {
   formModal({
     title: 'Vadeyi ertele', note: `İlk vade: ${date(e.original_due_date)} · Mevcut: ${date(e.due_date)}`,
-    fields: [{ name: 'due_date', label: 'Yeni vade', type: 'date', required: true, value: e.due_date }],
+    fields: [{ name: 'due_date', label: 'Yeni vade (boş = vadesiz)', type: 'date', value: e.due_date }],
     onSubmit: async (v) => { await api.patch(`/entries/${e.id}`, { due_date: v.due_date }); toast('Vade güncellendi', 'ok'); cb && cb(); },
   });
 }
@@ -141,13 +125,13 @@ export function accountForm(a, cb) {
       { name: 'workspace_id', label: 'İşletme / alan', type: 'select', required: true, value: a ? a.workspace_id : '', options: () => wsOptions(), ...(a ? { disabled: true } : {}) },
       { name: 'name', label: 'Hesap adı', required: true, value: a && a.name, max: 120 },
       { name: 'kind', label: 'Tür', type: 'select', value: a ? a.kind : 'bank', options: [['bank', 'Banka hesabı'], ['cash', 'Nakit kasa']] },
-      { name: 'currency', label: 'Para birimi', type: 'select', value: a ? a.currency : 'TRY', options: CURRENCIES.map((c) => [c, c]) },
+      { name: 'currency', label: 'Para birimi', type: 'select', value: a ? a.currency : 'TRY', options: CURRENCIES.map((c) => [c, c]), hint: a ? 'Hareketi olan hesabın para birimi değiştirilemez' : undefined },
       { name: 'bank_name', label: 'Banka', value: a && a.bank_name }, { name: 'iban', label: 'IBAN (isteğe bağlı)', value: a && a.iban, hint: 'TR ile başlayan 26 haneli; doğruluğu kontrol edilir' },
       ...(a ? [] : [{ name: 'opening_minor', label: 'Açılış bakiyesi', type: 'money', value: 0, hint: 'Açılış bakiyesi gelir sayılmaz' }, { name: 'opening_date', label: 'Açılış tarihi', type: 'date', required: true, value: todayStr() }]),
       { name: 'is_default', label: 'Varsayılan hesap', type: 'checkbox', value: a && a.is_default },
     ],
     onSubmit: async (v, key) => {
-      if (a) await api.patch('/accounts/' + a.id, { name: v.name, bank_name: v.bank_name, iban: v.iban, is_default: v.is_default });
+      if (a) await api.patch('/accounts/' + a.id, { name: v.name, bank_name: v.bank_name, iban: v.iban, is_default: v.is_default, kind: v.kind, currency: v.currency });
       else await api.post('/accounts', { workspace_id: idv(v.workspace_id), name: v.name, kind: v.kind, currency: v.currency, bank_name: v.bank_name, iban: v.iban, opening_minor: v.opening_minor || 0, opening_date: v.opening_date, is_default: v.is_default }, { idem: key });
       await done(cb, 'Hesap kaydedildi')();
     },
@@ -181,34 +165,53 @@ export function contactForm(c, cb) {
 }
 
 /** Alacak / borç / şahsi fatura kalemi */
-export function entryForm({ kind, source = 'manual' }, cb) {
+export function entryForm({ kind, source = 'manual', entry = null }, cb) {
   const bill = source === 'personal_bill';
   const wsList = state.meta.workspaces.filter((w) => !w.archived && (bill ? w.kind === 'personal' : true));
   if (!wsList.length) return toast(bill ? 'Önce “Şahsi” türünde bir alan oluşturun (Hesaplar sayfası).' : 'Önce bir işletme alanı oluşturun.', 'err');
   const rec = kind === 'receivable';
+  const edit = !!entry;
+  const locked = edit && Number(entry.paid_minor) > 0; // ödeme dağıtımı varsa para birimi/cari kilitli (sunucu da denetler)
   formModal({
-    title: bill ? 'Şahsi fatura ekle' : rec ? 'Alacak kaydı ekle' : 'Borç kaydı ekle', wide: true,
-    note: bill ? 'Şahsi faturalar şirket giderlerine eklenmez; ödeme takviminde görünür.' : 'Burada ödeme planı oluşturulur; ödeme yapılana kadar banka bakiyesi değişmez.',
+    title: edit ? (bill ? 'Şahsi faturayı düzenle' : 'Kalemi düzenle') : bill ? 'Şahsi fatura ekle' : rec ? 'Alacak kaydı ekle' : 'Borç kaydı ekle', wide: true,
+    note: edit ? 'Düzenleme geçmişi denetim kaydına yazılır. Ödenen tutardan küçük bir tutar girilemez.' : bill ? 'Şahsi faturalar şirket giderlerine eklenmez; ödeme takviminde görünür.' : 'Burada ödeme planı oluşturulur; ödeme yapılana kadar banka bakiyesi değişmez.',
     fields: [
-      { name: 'workspace_id', label: 'Alan', type: 'select', required: true, options: wsList.map((w) => [w.id, w.name]), value: wsList[0].id },
-      { name: 'title', label: bill ? 'Fatura (ör. Elektrik)' : 'Başlık', required: true, max: 200 },
-      ...(bill ? [{ name: 'provider', label: 'Sağlayıcı', max: 120 }, { name: 'period', label: 'Dönem (ör. 2026-10)', max: 20 }] : [{ name: 'contact_id', label: rec ? 'Müşteri' : 'Tedarikçi', type: 'select', options: contactOptions(rec ? 'customer' : 'supplier', 'Cari yok') }]),
-      { name: 'amount_minor', label: 'Tutar', type: 'money', required: true },
-      { name: 'currency', label: 'Para birimi', type: 'select', options: CURRENCIES.map((c) => [c, c]), value: 'TRY' },
-      { name: 'due_date', label: 'Vade / son ödeme', type: 'date', required: true, value: addDays(todayStr(), 7) },
-      ...(bill ? [] : [{ name: 'installments', label: 'Taksit sayısı (aylık)', type: 'number', min: 1, max: 120, value: 1 }, { name: 'priority', label: 'Öncelik', type: 'select', value: 2, options: [[1, 'Yüksek'], [2, 'Normal'], [3, 'Düşük']] },
-        { name: 'project_id', label: 'Proje', type: 'select', options: projectOptions() }, { name: 'category_id', label: 'Kategori', type: 'select', options: catOptions(rec ? 'income' : 'expense') },
-        { name: 'affects_pl', label: 'Gelir/gider olarak da say (kâr hesabına dahil et)', type: 'checkbox', full: true }]),
-      { name: 'note', label: 'Not', type: 'textarea', full: true },
+      { name: 'workspace_id', label: 'Alan', type: 'select', required: true, options: wsList.map((w) => [w.id, w.name]), value: edit ? entry.workspace_id : wsList[0].id, disabled: edit },
+      { name: 'title', label: bill ? 'Fatura (ör. Elektrik)' : 'Başlık', required: true, max: 200, value: edit ? entry.title : '' },
+      ...(bill ? [{ name: 'provider', label: 'Sağlayıcı', max: 120, value: edit ? entry.provider : '' }, { name: 'period', label: 'Dönem (ör. 2026-10)', max: 20, value: edit ? entry.period : '' }]
+        : [{ name: 'contact_id', label: rec ? 'Müşteri' : 'Tedarikçi', type: 'select', options: contactOptions(rec ? 'customer' : 'supplier', 'Cari yok'), value: edit ? entry.contact_id : '', disabled: locked }]),
+      { name: 'amount_minor', label: 'Tutar', type: 'money', required: true, value: edit ? entry.amount_minor : null, disabled: edit && entry.source === 'invoice' },
+      { name: 'currency', label: 'Para birimi', type: 'select', options: CURRENCIES.map((c) => [c, c]), value: edit ? entry.currency : 'TRY', disabled: locked },
+      { name: 'due_date', label: 'Vade / son ödeme (isteğe bağlı)', type: 'date', value: edit ? entry.due_date : addDays(todayStr(), 7), hint: 'Boş bırakırsanız vadesiz kaydedilir; gecikmiş sayılmaz.' },
+      { name: 'planned_date', label: edit ? 'Planlanan ödeme/tahsilat tarihi (vadeden ayrı)' : 'Planlanan tarih (isteğe bağlı, vadeden ayrı)', type: 'date', value: edit ? entry.planned_date : '', hint: 'Boş = tarih girilmemiş' },
+      ...(bill ? [] : [...(edit ? [] : [{ name: 'installments', label: 'Taksit sayısı (aylık)', type: 'number', min: 1, max: 120, value: 1, hint: 'Taksit için vade tarihi gerekir' }]), { name: 'priority', label: 'Öncelik', type: 'select', value: edit ? entry.priority : 2, options: [[1, 'Yüksek'], [2, 'Normal'], [3, 'Düşük']] },
+        { name: 'project_id', label: 'Proje', type: 'select', options: projectOptions(), value: edit ? entry.project_id : '' }, { name: 'category_id', label: 'Kategori', type: 'select', options: catOptions(rec ? 'income' : 'expense'), value: edit ? entry.category_id : '' },
+        { name: 'affects_pl', label: 'Gelir/gider olarak da say (kâr hesabına dahil et)', type: 'checkbox', full: true, value: edit ? Number(entry.affects_pl) : 0 }]),
+      { name: 'note', label: 'Not', type: 'textarea', full: true, value: edit ? entry.note : '' },
     ],
     onSubmit: async (v, key) => {
-      const b = { kind, source, workspace_id: idv(v.workspace_id), title: v.title, amount_minor: v.amount_minor, currency: v.currency, due_date: v.due_date, note: v.note };
+      if (edit) {
+        const b = { title: v.title, amount_minor: v.amount_minor, due_date: v.due_date, planned_date: v.planned_date || null, note: v.note };
+        if (!locked) b.currency = v.currency;
+        if (bill) Object.assign(b, { provider: v.provider, period: v.period });
+        else Object.assign(b, { priority: Number(v.priority), project_id: idv(v.project_id), category_id: idv(v.category_id), affects_pl: v.affects_pl, ...(locked ? {} : { contact_id: idv(v.contact_id) }) });
+        if (entry.source === 'invoice') delete b.amount_minor;
+        await api.patch('/entries/' + entry.id, b);
+        return done(cb, 'Güncellendi')();
+      }
+      const b = { kind, source, workspace_id: idv(v.workspace_id), title: v.title, amount_minor: v.amount_minor, currency: v.currency, due_date: v.due_date, planned_date: v.planned_date || null, note: v.note };
       if (bill) Object.assign(b, { provider: v.provider, period: v.period });
       else Object.assign(b, { contact_id: idv(v.contact_id), installments: Number(v.installments || 1), priority: Number(v.priority), project_id: idv(v.project_id), category_id: idv(v.category_id), affects_pl: v.affects_pl });
       await api.post('/entries', b, { idem: key });
       await done(cb, 'Kaydedildi')();
     },
   });
+}
+
+/** Silme: güvenli ise siler; ödeme geçmişi varsa neden açıklanır ve iptal önerilir. */
+export async function deleteEntry(e, cb) {
+  if (!await confirmDialog({ title: 'Kaydı sil', text: `“${e.title}” kalıcı olarak silinsin mi? Yalnızca hiç ödeme/tahsilat geçmişi olmayan, hatalı girilmiş kayıtlar silinebilir. Geçmişi olan kayıtlar için “İptal et” kullanın.`, ok: 'Sil', danger: true })) return;
+  try { await api.del('/entries/' + e.id); await loadMeta(); toast('Silindi', 'ok'); cb && cb(); } catch (er) { errToast(er); }
 }
 
 // ---------- belgeler ----------

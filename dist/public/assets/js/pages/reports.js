@@ -5,6 +5,7 @@ import { h, mount, loading, money, multi, date, table, errToast, toast, barChart
 const REPORTS = [
   ['income-expense', '📈 Gelir – Gider (aylık)'], ['cashflow', '💧 Nakit akışı'], ['vat', '🧮 KDV dökümü'], ['aging-receivable', '⏳ Alacak yaşlandırma'], ['aging-payable', '⏳ Borç yaşlandırma'],
   ['projects', '🏗️ Proje kârlılığı'], ['budget', '🎯 Bütçe – gerçekleşen'], ['converted', '💱 Ortak para birimi özeti'],
+  ['contacts-report', '👥 Cari hesap raporu'], ['accounts-report', '🏦 Kasa / banka raporu'], ['payments-report', '💸 Ödeme & tahsilat raporu'], ['stock-report', '📦 Stok raporu'],
 ];
 
 export default async function render(ctx) {
@@ -18,14 +19,15 @@ export default async function render(ctx) {
     const q = new URLSearchParams({ from: f.from, to: f.to, scope: f.scope, format: fmt, month: f.month }); if (kind) q.set('kind', kind);
     try { await api.download(`/export/${name}?${q}`, `${name}.${fmt}`); } catch (e) { errToast(e); }
   };
-  const usesRange = ['income-expense', 'cashflow', 'vat'].includes(f.report);
+  const RANGE = ['income-expense', 'cashflow', 'vat', 'accounts-report', 'payments-report', 'contacts-report', 'stock-report'];
+  const usesRange = RANGE.includes(f.report);
   const head = () => mount(el, ctx.head('Raporlar', 'Tüm rakamlar veritabanındaki kayıtlardan hesaplanır. PDF için “Yazdır / PDF” kullanın; CSV ve Excel dışa aktarma bulunur.', [exportable.includes(f.report) ? h('button', { class: 'btn', onclick: () => dl('csv') }, '⬇ CSV') : null, exportable.includes(f.report) ? h('button', { class: 'btn', onclick: () => dl('xlsx') }, '⬇ Excel') : null, printBtn()]),
     h('div', { class: 'filters' },
       h('div', { class: 'field' }, h('label', null, 'Rapor'), h('select', { class: 'input', onchange: (e) => { f.report = e.target.value; head(); load(); } }, REPORTS.map(([v, l]) => h('option', { value: v, selected: v === f.report }, l)))),
-      ['income-expense', 'cashflow', 'vat'].includes(f.report) ? [h('div', { class: 'field' }, h('label', null, 'Başlangıç'), h('input', { class: 'input', type: 'date', value: f.from, onchange: (e) => { f.from = e.target.value; load(); } })), h('div', { class: 'field' }, h('label', null, 'Bitiş'), h('input', { class: 'input', type: 'date', value: f.to, onchange: (e) => { f.to = e.target.value; load(); } }))] : null,
+      RANGE.includes(f.report) ? [h('div', { class: 'field' }, h('label', null, 'Başlangıç'), h('input', { class: 'input', type: 'date', value: f.from, onchange: (e) => { f.from = e.target.value; load(); } })), h('div', { class: 'field' }, h('label', null, 'Bitiş'), h('input', { class: 'input', type: 'date', value: f.to, onchange: (e) => { f.to = e.target.value; load(); } }))] : null,
       f.report === 'budget' ? h('div', { class: 'field' }, h('label', null, 'Ay'), h('input', { class: 'input', type: 'month', value: f.month, onchange: (e) => { f.month = e.target.value; load(); } })) : null,
       f.report === 'converted' ? h('div', { class: 'field' }, h('label', null, 'Hedef para birimi'), h('select', { class: 'input', onchange: (e) => { f.to_cur = e.target.value; load(); } }, CURRENCIES.map((c) => h('option', { value: c, selected: c === f.to_cur }, c)))) : null,
-      !['converted'].includes(f.report) ? h('div', { class: 'field' }, h('label', null, 'Kapsam'), h('select', { class: 'input', onchange: (e) => { f.scope = e.target.value; load(); } }, [['business', 'Yalnızca şirketler (şahsi hariç)'], ['personal', 'Yalnızca şahsi'], ['all', 'Hepsi']].map(([v, l]) => h('option', { value: v, selected: v === f.scope }, l)))) : null),
+      !['converted', 'contacts-report', 'accounts-report', 'payments-report', 'stock-report'].includes(f.report) ? h('div', { class: 'field' }, h('label', null, 'Kapsam'), h('select', { class: 'input', onchange: (e) => { f.scope = e.target.value; load(); } }, [['business', 'Yalnızca şirketler (şahsi hariç)'], ['personal', 'Yalnızca şahsi'], ['all', 'Hepsi']].map(([v, l]) => h('option', { value: v, selected: v === f.scope }, l)))) : null),
     out);
 
   async function load() {
@@ -74,6 +76,31 @@ export default async function render(ctx) {
         mount(out, readonly ? null : h('div', null, h('button', { class: 'btn primary', onclick: () => budgetForm() }, '＋ Bütçe belirle')),
           table({ cols: [{ key: 'category', label: 'Kategori' }, { key: 'currency', label: 'Birim' }, { key: 'budget_minor', label: 'Bütçe', num: true, render: (x) => money(x.budget_minor, x.currency) }, { key: 'actual_minor', label: 'Gerçekleşen', num: true, render: (x) => money(x.actual_minor, x.currency) }, { key: 'diff_minor', label: 'Kalan / (aşım)', num: true, render: (x) => h('b', { class: signClass(x.diff_minor) }, money(x.diff_minor, x.currency)) },
             { label: 'Kullanım', sortable: false, render: (x) => { const b = h('div', { class: 'bar' + (x.used_pct > 100 ? ' over' : '') }, h('i')); b.firstChild.style.width = Math.min(100, x.used_pct || 0) + '%'; return h('div', null, b, h('span', { class: 'xs muted' }, (x.used_pct ?? '—') + '%')); } }], rows: r.rows, empty: { icon: '🎯', title: 'Bu ay için bütçe yok', text: 'Kategori bazında aylık bütçe belirleyin.' } }));
+      } else if (f.report === 'contacts-report') {
+        const r = await api.get('/reports/contacts', { from: f.from, to: f.to });
+        mount(out, h('div', { class: 'alert info small' }, r.note), table({ cols: [{ key: 'contact', label: 'Cari' }, { key: 'currency', label: 'Birim' },
+          { label: 'Satış faturası', num: true, sortable: false, render: (x) => money(x.receivable_billed_minor, x.currency) }, { label: 'Tahsil edilen', num: true, sortable: false, render: (x) => money(x.receivable_paid_minor, x.currency) },
+          { label: 'Alış faturası', num: true, sortable: false, render: (x) => money(x.payable_billed_minor, x.currency) }, { label: 'Ödenen', num: true, sortable: false, render: (x) => money(x.payable_paid_minor, x.currency) },
+          { label: 'Avans (verilen / alınan)', num: true, sortable: false, render: (x) => `${money(x.advance_out_minor, x.currency)} / ${money(x.advance_in_minor, x.currency)}` },
+          { key: 'net_minor', label: 'Net bakiye', num: true, render: (x) => h('b', { class: signClass(x.net_minor) }, money(x.net_minor, x.currency, { sign: true })) }], rows: r.rows, empty: { icon: '👥', title: 'Kayıt yok' } }));
+      } else if (f.report === 'accounts-report') {
+        const r = await api.get('/reports/accounts', { from: f.from, to: f.to });
+        mount(out, h('div', { class: 'alert info small' }, 'Transferler giriş/çıkıştan ayrı gösterilir; gelir veya gider sayılmaz. Şahsi hesaplar işletme hesaplarından ayrı satırlardadır.'),
+          table({ cols: [{ key: 'name', label: 'Hesap', render: (x) => h('span', null, x.name, ' ', h('span', { class: 'badge ' + (x.workspace_kind === 'personal' ? 'info' : '') }, x.workspace_kind === 'personal' ? 'Şahsi' : 'İşletme'), Number(x.archived) ? h('span', { class: 'badge' }, 'Arşiv') : null) }, { key: 'currency', label: 'Birim' },
+            { label: 'Açılış', num: true, sortable: false, render: (x) => money(x.opening_minor, x.currency) }, { label: 'Girişler', num: true, sortable: false, render: (x) => h('span', { class: 'pos' }, money(x.in_minor, x.currency)) }, { label: 'Çıkışlar', num: true, sortable: false, render: (x) => h('span', { class: 'neg' }, money(x.out_minor, x.currency)) },
+            { label: 'Transfer +', num: true, sortable: false, render: (x) => money(x.transfer_in_minor, x.currency) }, { label: 'Transfer −', num: true, sortable: false, render: (x) => money(x.transfer_out_minor, x.currency) },
+            { label: 'Kapanış', num: true, sortable: false, render: (x) => h('b', null, money(x.closing_minor, x.currency)) }], rows: r.rows, empty: { icon: '🏦', title: 'Hesap yok' } }));
+      } else if (f.report === 'payments-report') {
+        const r = await api.get('/payments', { from: f.from, to: f.to, limit: 500 });
+        mount(out, h('div', { class: 'alert info small' }, 'Her ödeme/tahsilat tek satırdır; faturalara dağıtımı ayrı ödeme sayılmaz.'),
+          table({ cols: [{ key: 'txn_date', label: 'Tarih', render: (x) => date(x.txn_date) }, { label: 'Tür', sortable: false, render: (x) => (x.kind === 'payment' ? 'Ödeme' : 'Tahsilat') }, { key: 'contact_name', label: 'Cari', render: (x) => x.contact_name || '—' },
+            { label: 'Kaynak', sortable: false, render: (x) => (x.personal_source ? 'Şahsi › ' : 'İşletme › ') + x.account_name }, { key: 'amount_minor', label: 'Tutar', num: true, render: (x) => money(x.amount_minor, x.currency) },
+            { label: 'Eşleşen', num: true, sortable: false, render: (x) => money(x.allocated_minor, x.currency) }, { label: 'Eşleşmemiş', num: true, sortable: false, render: (x) => (x.unallocated_minor ? h('span', { class: 'warn-t' }, money(x.unallocated_minor, x.currency)) : '—') },
+            { label: 'Neden / açıklama', sortable: false, render: (x) => x.reason || x.description || '—' }], rows: r.payments, empty: { icon: '💸', title: 'Ödeme/tahsilat yok' } }));
+      } else if (f.report === 'stock-report') {
+        const r = await api.get('/reports/stock', { from: f.from, to: f.to });
+        mount(out, h('div', { class: 'alert info small' }, r.note), table({ cols: [{ key: 'name', label: 'Ürün' }, { label: 'Mevcut', num: true, sortable: false, render: (x) => x.qty_milli / 1000 }, { label: 'Giriş', num: true, sortable: false, render: (x) => x.in_milli / 1000 }, { label: 'Çıkış', num: true, sortable: false, render: (x) => x.out_milli / 1000 },
+          { label: 'Karşılanmamış satış', num: true, sortable: false, render: (x) => x.backorder_milli / 1000 }, { label: 'İptal edilen hareket', num: true, sortable: false, render: (x) => x.voided_count }], rows: r.items, empty: { icon: '📦', title: 'Stoklu ürün yok' } }));
       } else if (f.report === 'converted') {
         const r = await api.get('/reports/converted', { to: f.to_cur });
         mount(out, h('div', { class: 'alert info small' }, r.note), r.missing_rates.length ? h('div', { class: 'alert warn' }, `${r.missing_rates.join(', ')} için kur girilmemiş. Ayarlar › Kurlar bölümünden ekleyin veya TCMB'den çekin.`) : null,

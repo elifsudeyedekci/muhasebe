@@ -5,6 +5,7 @@ import { R, ok, section, startServer, seed, waitUp, launch, watch, shot, login, 
 const ADMIN = 'admin@e2e.local'; const APASS = 'Vk7#pL2$wN9xQz';
 const CUST = 'musteri@e2e.local'; const CPASS = 'Yesil#Orman-9137Zx';
 await seed();
+fs.rmSync(path.join(ROOT, 'e2e', '.state.json'), { force: true }); // önceki run2 durumu geçersiz
 const server = startServer();
 process.on('exit', () => server.kill());
 await waitUp();
@@ -167,8 +168,8 @@ try {
   await modal().getByRole('button', { name: 'Kaydet' }).click();
   await page.getByText('Büyük satış').first().waitFor();
   await page.getByRole('row', { name: /Büyük satış/ }).getByRole('button', { name: 'Tahsil et' }).click();
-  await pick('Hangi hesaba', 'Ana Banka'); await modal().getByLabel('Tutar').fill('60.000');
-  await modal().getByRole('button', { name: 'Tahsil et' }).click();
+  await pick('Hangi hesaba', 'Ana Banka'); await modal().getByLabel('Toplam tutar').fill('60.000');
+  await modal().getByRole('button', { name: 'Tahsilatı kaydet' }).click();
   await page.getByText('40.000,00 ₺').first().waitFor();
   ok(true, '100.000 TL alacağın 60.000 TL tahsilatı sonrası kalan 40.000,00 ₺');
   await shot(page, '08-plan');
@@ -210,7 +211,7 @@ try {
   await page.waitForTimeout(500);
   await shot(page, '10-reports');
   await page.getByRole('link', { name: /Ana Ekran/ }).first().click();
-  await page.getByText('Eldeki para').waitFor();
+  await page.getByText('Kasa + banka', { exact: true }).waitFor();
   await shot(page, '11-dashboard');
   ok(await page.getByText('Planlanan tahsilatlar').count() >= 0, 'dashboard açıldı');
 
@@ -251,7 +252,7 @@ try {
   const mob = await launch('iPhone 13');
   const mp = await mob.ctx.newPage(); watch(mp, 'iphone');
   await login(mp, CUST, CPASS);
-  await mp.getByText('Eldeki para').waitFor({ timeout: 20000 });
+  await mp.getByText('Kasa + banka', { exact: true }).waitFor({ timeout: 20000 });
   await shot(mp, '16-mobile-dashboard');
   ok(await mp.locator('.tabbar').isVisible(), 'mobilde alt sekme çubuğu görünür');
   ok(!(await mp.locator('.sidebar').isVisible()), 'mobilde yan menü gizli');

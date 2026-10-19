@@ -14,4 +14,6 @@ return [
     'session_absolute' => 43200,
     'session_rotate' => 2,
     'max_sessions' => 8,
+    'rate_api_ip' => 100000,
+    'rate_api_user' => 100000,
 ];

@@ -39,16 +39,18 @@ export default async function render(ctx) {
     const chk = (k, label) => { const i = h('input', { type: 'checkbox', checked: !!s.notify[k] }); i.dataset.k = k; return h('label', { class: 'check' }, i, label); };
     const nboxes = [chk('due', 'Yaklaşan vadeler (3 gün)'), chk('overdue', 'Gecikmiş kalemler'), chk('card', 'Kart son ödeme tarihleri'), chk('bills', 'Şahsi fatura hatırlatmaları'), chk('email', 'E-posta ile günlük özet (tutar içermez)')];
     const prefix = h('input', { class: 'input', value: s.invoice.prefix, maxlength: 12 }); const dd = h('input', { class: 'input', type: 'number', min: 0, max: 365, value: s.invoice.default_due_days }); const note = h('textarea', { class: 'input', rows: 2, maxlength: 500 }, s.invoice.note);
+    const neg = h('input', { type: 'checkbox', checked: !!(s.stock && s.stock.allow_negative) });
     mount(body, h('div', { class: 'card stack' }, h('h2', null, 'Görünüm & varsayılanlar'),
       h('div', { class: 'form-grid' }, h('div', { class: 'field' }, h('label', null, 'Tema'), theme), h('div', { class: 'field' }, h('label', null, 'Ana para birimi tercihi'), cur), h('div', { class: 'field' }, h('label', null, 'Varsayılan alan'), defWs), h('div', { class: 'field' }, h('label', null, 'Varsayılan hesap'), defAcc),
         h('div', { class: 'field full' }, h('label', null, 'KDV oranları (virgülle, %)'), vat, h('div', { class: 'hint' }, 'Örn: 0, 10, 20 — kod içinde sabit değildir; burada tanımlarsınız.'))),
       h('h2', null, 'Bildirimler'), h('div', { class: 'stack tight' }, nboxes),
-      h('h2', null, 'Fatura & belge tercihleri'), h('div', { class: 'form-grid' }, h('div', { class: 'field' }, h('label', null, 'Numara ön eki'), prefix), h('div', { class: 'field' }, h('label', null, 'Varsayılan vade (gün)'), dd), h('div', { class: 'field full' }, h('label', null, 'Varsayılan fatura notu'), note)),
+      h('h2', null, 'Fatura & belge tercihleri'), h('div', { class: 'form-grid' }, h('div', { class: 'field' }, h('label', null, 'Numara ön eki'), prefix), h('div', { class: 'field' }, h('label', null, 'Varsayılan vade (gün)'), dd, h('div', { class: 'hint' }, '0 = varsayılan vade yok (vadesiz). Her faturada ayrıca değiştirebilir veya boş bırakabilirsiniz.')), h('div', { class: 'field full' }, h('label', null, 'Varsayılan fatura notu'), note)),
+      h('h2', null, 'Stok politikası'), h('label', { class: 'check' }, neg, 'Negatif stoğa izin ver'), h('div', { class: 'hint' }, 'Kapalıyken (önerilen) stok eksiye düşmez: stokta olmayan ürünün satışı kaydedilir, eksik miktar “bekleyen teslimat” olarak ayrı izlenir.'),
       h('div', { class: 'small muted' }, 'Tarih ve sayı biçimi: Türkiye standardı (GG.AA.YYYY, 1.234,56); saat dilimi Europe/Istanbul.'),
       h('div', null, h('button', { class: 'btn primary', onclick: async () => {
         const notify = {}; nboxes.forEach((l) => { const i = l.querySelector('input'); notify[i.dataset.k] = i.checked; });
         const rates = vat.value.split(',').map((x) => Math.round(Number(x.trim().replace(',', '.')) * 100)).filter((x) => Number.isFinite(x) && x >= 0 && x <= 10000);
-        try { await api.put('/settings', { theme: theme.value, preferred_currency: cur.value, default_workspace_id: defWs.value ? Number(defWs.value) : null, default_account_id: defAcc.value ? Number(defAcc.value) : null, vat_rates: rates, notify, invoice: { prefix: prefix.value, default_due_days: Number(dd.value), note: note.value } }); applyTheme(theme.value); await loadMeta(); toast('Tercihler kaydedildi', 'ok'); } catch (e) { errToast(e); }
+        try { await api.put('/settings', { theme: theme.value, preferred_currency: cur.value, default_workspace_id: defWs.value ? Number(defWs.value) : null, default_account_id: defAcc.value ? Number(defAcc.value) : null, vat_rates: rates, notify, invoice: { prefix: prefix.value, default_due_days: Number(dd.value || 0), note: note.value }, stock: { allow_negative: neg.checked } }); applyTheme(theme.value); await loadMeta(); toast('Tercihler kaydedildi', 'ok'); } catch (e) { errToast(e); }
       } }, 'Kaydet'))));
   }
 
@@ -58,7 +60,8 @@ export default async function render(ctx) {
       const col = (kind, title) => h('div', { class: 'card stack' }, h('div', { class: 'card-title' }, title, h('button', { class: 'btn sm', onclick: () => formModal({ title: 'Yeni kategori', fields: [{ name: 'name', label: 'Ad', required: true }], onSubmit: async (v) => { await api.post('/categories', { kind, name: v.name }); await loadMeta(); load(); } }) }, '＋')),
         h('div', { class: 'list' }, r.categories.filter((c) => c.kind === kind).map((c) => h('div', { class: 'list-item' }, h('div', { class: 'grow' }, c.name, Number(c.archived) ? h('span', { class: 'badge' }, 'Arşiv') : null),
           h('button', { class: 'btn sm ghost', onclick: () => formModal({ title: 'Kategoriyi düzenle', fields: [{ name: 'name', label: 'Ad', required: true, value: c.name }], onSubmit: async (v) => { await api.patch('/categories/' + c.id, { name: v.name }); await loadMeta(); load(); } }) }, '✏️'),
-          h('button', { class: 'btn sm ghost', onclick: async () => { await api.patch('/categories/' + c.id, { archived: !Number(c.archived) }); await loadMeta(); load(); } }, Number(c.archived) ? '↩' : '🗄')))));
+          h('button', { class: 'btn sm ghost', onclick: async () => { await api.patch('/categories/' + c.id, { archived: !Number(c.archived) }); await loadMeta(); load(); } }, Number(c.archived) ? '↩' : '🗄'),
+          h('button', { class: 'btn sm ghost', title: 'Sil (kullanılmıyorsa)', onclick: async () => { if (!await confirmDialog({ title: 'Kategoriyi sil', text: c.name + ' silinsin mi? Kullanılan kategoriler silinemez; arşivleyebilirsiniz.', ok: 'Sil', danger: true })) return; try { await api.del('/categories/' + c.id); await loadMeta(); load(); } catch (e) { errToast(e); } } }, '🗑')))));
       mount(body, h('div', { class: 'auto-grid' }, col('income', 'Gelir kategorileri'), col('expense', 'Gider kategorileri')));
     };
     await draw2();

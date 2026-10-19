@@ -28,3 +28,13 @@ Tüm tutarlar küçük birimde tam sayıdır (kuruş/cent). TL, EUR, USD **asla 
 - **Kapsam:** raporlar `Yalnızca şirketler / Yalnızca şahsi / Hepsi` ile ayrılır; şahsi giderler şirket giderine otomatik eklenmez.
 - **Gerçekleşen işlem tarihi ileri tarihli olamaz**; ileri tarihli ödemeler plan (alacak/borç) olarak girilir. Hesabın açılış tarihinden önce işlem girilemez.
 - **Kısmi ödeme / fazla ödeme:** satır kilidi altında kalan kontrol edilir; kalandan fazlası reddedilir; para birimi uyuşmazlığı reddedilir.
+
+## Ödeme dağıtımı, avans, vade, stok, şahsi hesap (migration 003–004)
+- **Tek para hareketi, çok dağıtım:** ödeme/tahsilat `transactions` içinde TEK kayıttır; faturalarla eşleşmesi `payment_allocations` tablosundadır. Dağıtım eklemek/geri almak/yeniden düzenlemek **para hareketi üretmez**, kasa/banka bakiyesini değiştirmez. Dağıtılmayan kısım cari hesapta **avans / eşleştirilmemiş** durur (fatura borcu veya alacağı sayılmaz) ve sonradan faturaya eşleştirilir.
+- **Gelir ekranından müşteri seçilirse:** tutar müşteri **tahsilatı/avansı** olarak cari hesaba işlenir ve **gelir sayılmaz** (gelir fatura ile tahakkuk eder → çift sayım yok). Cari ile ilgisi olmayan gelir için “bağımsız gelir” işaretlenir (`standalone`). Eski hatalı kayıtlar “Cari tahsilatına çevir” ile düzeltilir (para hareketi aynı kalır, denetim kaydı yazılır).
+- **Cari ekstre bakiyesi:** + müşteri bize borçlu / − biz borçluyuz. Faturalar +/−, tahsilat/ödeme tek satır, iptaller 0. Avans ayrı gösterilir ve net bakiyeden düşülür (cari raporu).
+- **Vade isteğe bağlıdır** (NULL = vadesiz, gecikmiş sayılmaz, sessiz 30 gün yok). **Planlanan tarih** (`entries.planned_date`) vadeden ayrıdır; boşsa “tarih girilmemiş”.
+- **Ana sayfa:** yalnızca işletme alanları; kasa+banka = işletme hesapları; alacak/borç = açık kalemlerin kalanı (aktif dağıtımlar düşülmüş, şahsi fatura hariç); avanslar ayrı. Liste anahtar tarihi: planlanan tarih, yoksa vade, yoksa tarihsiz. Sıra: gecikmiş → bugün → yaklaşan → tarihsiz; tamamlananlar listelenmez.
+- **Stok/teslimat:** fatura ≠ teslimat ≠ ödeme. Satırdaki `fulfilled_milli` işlenen miktardır; stok hareketi yalnızca fark kadar yazılır (tekrar kaydetme ikinci hareket üretmez). Negatif stok varsayılan kapalı; stokta olmayan satış kaydedilir, eksik miktar “bekleyen teslimat” olur.
+- **Şahsi hesap:** işletme adına şahsi hesaptan ödeme işletme bankasını azaltmaz; `for_workspace_id` ile işaretlenir, ortak cari (işletmenin sahibe borcu) hesabını besler. Şahsi↔işletme transferi `owner_in/owner_out` (gelir/gider değil).
+- **Silme:** geçmişi olmayan hatalı kayıt silinir; ödeme dağıtımı/hareketi olan kayıt silinmez (iptal/arşiv/ters kayıt).

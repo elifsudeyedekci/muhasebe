@@ -1,7 +1,7 @@
 import { api } from '../api.js';
 import { state, scopeParams, loadMeta } from '../state.js';
 import { h, mount, loading, money, multi, date, table, errToast, toast, confirmDialog, stateBadge, tabs, seg, modal, todayStr, addDays, MONTHS, monthLabel, debounce, formModal, CURRENCIES, menu, signClass } from '../ui.js';
-import { settleForm, rescheduleForm, entryForm, docsModal } from '../forms_core.js';
+import { settleForm, rescheduleForm, entryForm, docsModal, deleteEntry, quickSettle } from '../forms_core.js';
 import { wsOptions, contactOptions, catOptions } from '../state.js';
 
 export default async function render(ctx) {
@@ -11,7 +11,7 @@ export default async function render(ctx) {
   const body = h('div', { class: 'stack' });
   const draw = () => {
     mount(el, ctx.head('Alacak, Borç & Ödeme Takvimi', 'Planlanan tahsilat ve ödemeler. Plan bankaya işlenene kadar bakiyeyi değiştirmez; yalnızca kalan tutar görünür.', readonly ? null : [
-      h('button', { class: 'btn', onclick: () => entryForm({ kind: 'receivable' }, load) }, '＋ Alacak'), h('button', { class: 'btn primary', onclick: () => entryForm({ kind: 'payable' }, load) }, '＋ Borç')]),
+      h('button', { class: 'btn', onclick: () => quickSettle('receivable', load) }, '💰 Tahsilat gir'), h('button', { class: 'btn', onclick: () => quickSettle('payable', load) }, '💸 Ödeme yap'), h('button', { class: 'btn', onclick: () => entryForm({ kind: 'receivable' }, load) }, '＋ Alacak'), h('button', { class: 'btn primary', onclick: () => entryForm({ kind: 'payable' }, load) }, '＋ Borç')]),
       tabs([['receivable', 'Alacaklar'], ['payable', 'Borçlar'], ['calendar', 'Takvim'], ['recurring', 'Tekrarlayanlar']], tab, (k) => { tab = k; draw(); load(); }), body);
   };
   const entryTable = (r) => {
@@ -19,7 +19,7 @@ export default async function render(ctx) {
     return table({
       cols: [
         { key: 'title', label: rec ? 'Alacak' : 'Borç', render: (e) => h('div', null, h('b', null, e.title), h('div', { class: 'xs muted' }, [e.contact_name, e.workspace_name, e.project_name].filter(Boolean).join(' · ')), e.seq ? h('span', { class: 'badge' }, `${e.seq}/${e.seq_total}`) : null) },
-        { key: 'due_date', label: 'Vade', render: (e) => h('div', null, date(e.due_date), e.rescheduled ? h('div', { class: 'xs muted' }, 'ilk vade ' + date(e.original_due_date)) : null, e.days_overdue ? h('div', { class: 'xs neg' }, e.days_overdue + ' gün gecikmiş') : null) },
+        { key: 'due_date', label: 'Vade', render: (e) => h('div', null, e.due_date ? date(e.due_date) : 'Vadesiz', e.rescheduled ? h('div', { class: 'xs muted' }, 'ilk vade ' + date(e.original_due_date)) : null, e.days_overdue ? h('div', { class: 'xs neg' }, e.days_overdue + ' gün gecikmiş') : null) },
         { key: 'amount_minor', label: 'Tutar', num: true, render: (e) => money(e.amount_minor, e.currency) },
         { key: 'paid_minor', label: rec ? 'Tahsil edilen' : 'Ödenen', num: true, render: (e) => money(e.paid_minor, e.currency) },
         { key: 'remaining_minor', label: 'Kalan', num: true, render: (e) => h('b', { class: rec ? 'pos' : 'neg' }, money(e.remaining_minor, e.currency)) },
@@ -28,6 +28,8 @@ export default async function render(ctx) {
           !readonly && e.state !== 'paid' && e.state !== 'cancelled' ? h('button', { class: 'btn sm primary', onclick: () => settleForm(e, load) }, rec ? 'Tahsil et' : 'Öde') : null,
           h('button', { class: 'btn sm ghost', onclick: (ev) => menu(ev.currentTarget, [
             { label: '📎 Belgeler', run: () => docsModal('Belgeler', 'entry', e.id, readonly) },
+            e.source === 'invoice' ? { label: '🧾 Faturayı aç', run: () => ctx.go('/invoices?open=' + e.invoice_id) } : (!readonly && e.state !== 'cancelled' ? { label: '✏️ Düzenle', run: () => entryForm({ kind: e.kind, source: e.source === 'personal_bill' ? 'personal_bill' : 'manual', entry: e }, load) } : null),
+            !readonly && e.source !== 'invoice' ? { label: '🗑 Sil (hatalı kayıt)', run: () => deleteEntry(e, load) } : null,
             !readonly && e.state !== 'paid' && e.state !== 'cancelled' ? { label: '📅 Vadeyi ertele', run: () => rescheduleForm(e, load) } : null,
             !readonly && e.source !== 'invoice' && e.state !== 'cancelled' && e.paid_minor === 0 ? { label: '🚫 İptal et', run: async () => { const reason = await confirmDialog({ title: 'Kalemi iptal et', text: 'Kalem silinmez, iptal edilmiş olarak saklanır.', input: 'Gerekçe', ok: 'İptal et', danger: true }); if (!reason) return; try { await api.post(`/entries/${e.id}/cancel`, { reason }); toast('İptal edildi', 'ok'); load(); } catch (er) { errToast(er); } } } : null].filter(Boolean)) }, '⋯')) },
       ], rows: r.entries, empty: { icon: rec ? '📥' : '📤', title: rec ? 'Açık alacak yok' : 'Açık borç yok', text: 'Filtreleri değiştirin ya da yeni kayıt ekleyin.' },

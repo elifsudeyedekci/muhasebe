@@ -55,7 +55,7 @@ final class Kernel
             }
             [$handler, $params, $opt] = $m;
             RateLimit::gc();
-            RateLimit::enforce('api_ip:' . $req->ip, 600, 60);
+            RateLimit::enforce('api_ip:' . $req->ip, (int)Cfg::get('rate_api_ip', 600), 60);
             $req->parseBody();
             $tid = null;
             $auth = $opt['auth'];
@@ -72,7 +72,7 @@ final class Kernel
                     if ($req->isMutation()) {
                         Auth::checkCsrf($req);
                     }
-                    RateLimit::enforce('api_user:' . Auth::$user['id'], 900, 60);
+                    RateLimit::enforce('api_user:' . Auth::$user['id'], (int)Cfg::get('rate_api_user', 900), 60);
                     if (Auth::$user['role'] === 'admin' && !Auth::ipAllowed($req->ip)) {
                         Audit::log('security', 'admin_ip_denied', ['ip' => $req->ip]);
                         throw new ApiError('forbidden', 'Bu adresten yönetici erişimi kapalı.', 403);
@@ -153,7 +153,7 @@ final class Kernel
         $r->add('POST', '/auth/2fa/enable', fn($q) => AuthCtl::enable2fa($q), $u);
         $r->add('POST', '/auth/2fa/disable', fn($q) => AuthCtl::disable2fa($q), $u);
         // --- diğer modüller ---
-        foreach (['AdminCtl', 'SetupCtl', 'LedgerCtl', 'InvoiceCtl', 'CardCtl', 'StockCtl', 'ReportCtl', 'FileCtl', 'ImportCtl', 'SettingsCtl'] as $c) {
+        foreach (['AdminCtl', 'SetupCtl', 'LedgerCtl', 'PayCtl', 'InvoiceCtl', 'CardCtl', 'StockCtl', 'ReportCtl', 'FileCtl', 'ImportCtl', 'SettingsCtl'] as $c) {
             $cls = 'FB\\' . $c;
             $cls::routes($r);
         }

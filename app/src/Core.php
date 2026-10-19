@@ -205,6 +205,12 @@ final class Money
         return ['TRY', 'EUR', 'USD'];
     }
 
+    /** Miktar (binde bir birim) → okunur metin. */
+    public static function fmtQty(int $milli): string
+    {
+        return rtrim(rtrim(number_format($milli / 1000, 3, ',', '.'), '0'), ',');
+    }
+
     /** Taşmaya dayanıklı a*b/div (bcmath varsa tam hassasiyet; yoksa float yedeği — yalnızca bilgi amaçlı dönüşümlerde kullanılır). */
     public static function mulDivBig(int $a, int $b, int $div): int
     {

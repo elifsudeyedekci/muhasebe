@@ -26,6 +26,11 @@ final class SetupCtl
         $r->add('POST', '/contacts', fn($q, $p, $tid) => self::contactSave($q, null, $tid), $ti);
         $r->add('PATCH', '/contacts/{id}', fn($q, $p, $tid) => self::contactSave($q, (int)$p['id'], $tid), $t);
         $r->add('GET', '/contacts/{id}/statement', fn($q, $p, $tid) => self::statement($q, (int)$p['id'], $tid), $t);
+        $r->add('DELETE', '/workspaces/{id}', fn($q, $p, $tid) => Fin::deleteIfUnused('workspaces', (int)$p['id'], $tid, 'Alan', [['accounts', 'workspace_id'], ['entries', 'workspace_id'], ['invoices', 'workspace_id'], ['projects', 'workspace_id'], ['cards', 'workspace_id'], ['loans', 'workspace_id'], ['recurring_templates', 'workspace_id'], ['card_purchases', 'workspace_id'], ['transactions', 'workspace_id'], ['transactions', 'for_workspace_id']]), $t);
+        $r->add('DELETE', '/accounts/{id}', fn($q, $p, $tid) => self::accDelete((int)$p['id'], $tid), $t);
+        $r->add('DELETE', '/categories/{id}', fn($q, $p, $tid) => Fin::deleteIfUnused('categories', (int)$p['id'], $tid, 'Kategori', [['transactions', 'category_id'], ['entries', 'category_id'], ['card_purchases', 'category_id'], ['recurring_templates', 'category_id'], ['budgets', 'category_id']]), $t);
+        $r->add('DELETE', '/contacts/{id}', fn($q, $p, $tid) => Fin::deleteIfUnused('contacts', (int)$p['id'], $tid, 'Cari', [['entries', 'contact_id'], ['transactions', 'contact_id'], ['invoices', 'contact_id'], ['projects', 'contact_id'], ['card_purchases', 'contact_id'], ['recurring_templates', 'contact_id']]), $t);
+        $r->add('DELETE', '/projects/{id}', fn($q, $p, $tid) => Fin::deleteIfUnused('projects', (int)$p['id'], $tid, 'Proje', [['entries', 'project_id'], ['transactions', 'project_id'], ['invoices', 'project_id'], ['stock_movements', 'project_id'], ['project_quotes', 'project_id'], ['project_milestones', 'project_id'], ['accounts', 'project_id'], ['card_purchases', 'project_id']]), $t);
         $r->add('GET', '/projects', fn($q, $p, $tid) => self::projects($tid), $t);
         $r->add('POST', '/projects', fn($q, $p, $tid) => self::projectSave($q, null, $tid), $ti);
         $r->add('PATCH', '/projects/{id}', fn($q, $p, $tid) => self::projectSave($q, (int)$p['id'], $tid), $t);
@@ -196,6 +201,17 @@ final class SetupCtl
             $u['is_default'] = V::bool($b, 'is_default');
         }
         $hasTx = (int)DB::val('SELECT COUNT(*) FROM transactions WHERE account_id=? AND tenant_id=?', [$id, $tid]) > 0;
+        foreach (['kind' => ['bank', 'cash']] as $ek => $allowed) {
+            if (isset($b[$ek]) && $b[$ek] !== $a[$ek]) {
+                $u[$ek] = V::enum($b, $ek, $allowed);
+            }
+        }
+        if (isset($b['currency']) && $b['currency'] !== $a['currency']) {
+            if ($hasTx) {
+                throw new ApiError('has_transactions', 'Hareketi olan hesabın para birimi değiştirilemez.', 409, 'currency');
+            }
+            $u['currency'] = V::cur($b);
+        }
         if (isset($b['opening_minor']) || isset($b['opening_date'])) {
             if ($hasTx) {
                 throw new ApiError('has_transactions', 'Hareketi olan hesabın açılış bakiyesi değiştirilemez; bakiye düzeltme kaydı kullanın.', 409);
@@ -221,6 +237,23 @@ final class SetupCtl
             DB::update('accounts', $u, 'id=? AND tenant_id=?', [$id, $tid]);
             Audit::log('data', 'account_updated', ['tenant' => $tid, 'entity' => 'account', 'id' => $id, 'details' => ['before' => array_intersect_key($a, $u), 'after' => $u]]);
         }
+        Res::ok();
+    }
+
+    /** Hesap silme: hiç hareketi (iptal edilmiş dahil) ve ekstre satırı olmayan hesap silinir; aksi halde arşivleme önerilir. */
+    private static function accDelete(int $id, int $tid): never
+    {
+        $a = DB::one('SELECT * FROM accounts WHERE id=? AND tenant_id=?', [$id, $tid]);
+        if (!$a) {
+            throw new ApiError('not_found', 'Hesap bulunamadı.', 404);
+        }
+        if (DB::val('SELECT 1 FROM transactions WHERE account_id=? AND tenant_id=? LIMIT 1', [$id, $tid]) || DB::val('SELECT 1 FROM statement_lines WHERE account_id=? AND tenant_id=? LIMIT 1', [$id, $tid])) {
+            throw new ApiError('has_transactions', 'Bu hesabın hareket geçmişi var, silinemez (geçmiş korunur). Bakiyeyi sıfırlayıp hesabı arşivleyin; arşivlenen hesapta yeni işlem yapılamaz, eski hareketler ve raporlar görünür kalır.', 409);
+        }
+        DB::tx(function () use ($id, $tid, $a) {
+            DB::exec('DELETE FROM accounts WHERE id=? AND tenant_id=?', [$id, $tid]);
+            Audit::log('data', 'account_deleted', ['tenant' => $tid, 'entity' => 'account', 'id' => $id, 'details' => ['name' => $a['name'], 'opening_minor' => (int)$a['opening_minor']]]);
+        });
         Res::ok();
     }
 
@@ -319,6 +352,12 @@ final class SetupCtl
                 $bal[(int)$e['contact_id']][$e['currency']][$e['kind']] = ($bal[(int)$e['contact_id']][$e['currency']][$e['kind']] ?? 0) + (int)$e['remaining_minor'];
             }
         }
+        foreach (DB::all("SELECT t.contact_id, t.currency, t.kind, SUM(t.amount_minor - COALESCE((SELECT SUM(pa.amount_minor) FROM payment_allocations pa WHERE pa.txn_id=t.id AND pa.status='active'),0)) un
+                          FROM transactions t WHERE t.tenant_id=? AND t.status='posted' AND t.kind IN ('payment','collection') AND t.contact_id IS NOT NULL GROUP BY t.contact_id, t.currency, t.kind", [$tid]) as $a) {
+            if ((int)$a['un'] > 0) {
+                $bal[(int)$a['contact_id']][$a['currency']][$a['kind'] === 'payment' ? 'advance_out' : 'advance_in'] = (int)$a['un'];
+            }
+        }
         foreach ($rows as &$c) {
             $c['id'] = (int)$c['id'];
             $c['balances'] = $bal[$c['id']] ?? new \stdClass();
@@ -372,19 +411,39 @@ final class SetupCtl
         $ws = V::id($r->query['workspace_id'] ?? null, 'workspace_id', false);
         $from = V::date($r->query, 'from', false);
         $to = V::date($r->query, 'to', false);
-        $w = 'e.tenant_id=? AND e.contact_id=? AND e.status=\'open\'' . ($ws ? ' AND e.workspace_id=' . (int)$ws : '');
-        $es = DB::all("SELECT e.id,e.kind,e.title,e.currency,e.amount_minor,e.due_date,e.workspace_id, COALESCE(i.issue_date, DATE(e.created_at)) AS ev_date, i.number
-                       FROM entries e LEFT JOIN invoices i ON i.id=e.invoice_id WHERE $w", [$tid, $id]);
+        $type = in_array($r->query['type'] ?? '', ['invoices', 'payments'], true) ? $r->query['type'] : 'all';
         $lines = [];
-        foreach ($es as $e) {
-            $sign = $e['kind'] === 'receivable' ? 1 : -1; // + : cari bize borçlu
-            $lines[] = ['date' => $e['ev_date'], 'sort' => 0, 'currency' => $e['currency'], 'workspace_id' => (int)$e['workspace_id'], 'type' => $e['kind'] === 'receivable' ? 'Alacak' : 'Borç', 'text' => $e['title'] . ($e['number'] ? ' (' . $e['number'] . ')' : ''), 'signed_minor' => $sign * (int)$e['amount_minor'], 'due_date' => $e['due_date']];
+        if ($type !== 'payments') {
+            $es = DB::all("SELECT e.id,e.kind,e.title,e.currency,e.amount_minor,e.due_date,e.workspace_id,e.status,e.invoice_id, COALESCE(i.issue_date, DATE(e.created_at)) AS ev_date, i.number
+                           FROM entries e LEFT JOIN invoices i ON i.id=e.invoice_id WHERE e.tenant_id=? AND e.contact_id=?" . ($ws ? ' AND e.workspace_id=' . (int)$ws : ''), [$tid, $id]);
+            foreach ($es as $e) {
+                $sign = $e['kind'] === 'receivable' ? 1 : -1; // + : cari bize borçlu
+                $cancelled = $e['status'] === 'cancelled';
+                $lines[] = ['date' => $e['ev_date'], 'sort' => 0, 'currency' => $e['currency'], 'workspace_id' => (int)$e['workspace_id'], 'type' => ($e['kind'] === 'receivable' ? 'Alacak' : 'Borç') . ($cancelled ? ' (iptal)' : ''),
+                    'text' => $e['title'] . ($e['number'] ? ' (' . $e['number'] . ')' : ''), 'signed_minor' => $cancelled ? 0 : $sign * (int)$e['amount_minor'], 'amount_minor' => (int)$e['amount_minor'], 'due_date' => $e['due_date'],
+                    'ref' => $e['invoice_id'] ? ['type' => 'invoice', 'id' => (int)$e['invoice_id']] : ['type' => 'entry', 'id' => (int)$e['id']], 'status' => $e['status']];
+            }
         }
-        $ts = DB::all("SELECT t.txn_date, t.kind, t.currency, t.workspace_id, t.amount_minor, t.description, e.kind AS ekind FROM transactions t JOIN entries e ON e.id=t.entry_id
-                       WHERE t.tenant_id=? AND e.contact_id=? AND t.status='posted'" . ($ws ? ' AND t.workspace_id=' . (int)$ws : ''), [$tid, $id]);
-        foreach ($ts as $t) {
-            $sign = $t['ekind'] === 'receivable' ? -1 : 1; // tahsilat bakiyeyi azaltır
-            $lines[] = ['date' => $t['txn_date'], 'sort' => 1, 'currency' => $t['currency'], 'workspace_id' => (int)$t['workspace_id'], 'type' => $t['ekind'] === 'receivable' ? 'Tahsilat' : 'Ödeme', 'text' => (string)$t['description'], 'signed_minor' => $sign * (int)$t['amount_minor'], 'due_date' => null];
+        if ($type !== 'invoices') {
+            $ts = DB::all("SELECT t.id, t.txn_date, t.kind, t.currency, t.amount_minor, t.description, t.reason, t.reference, t.status, t.void_reason,
+                           COALESCE(t.for_workspace_id, (SELECT e2.workspace_id FROM payment_allocations a2 JOIN entries e2 ON e2.id=a2.entry_id WHERE a2.txn_id=t.id AND a2.status='active' ORDER BY a2.id LIMIT 1), t.workspace_id) AS ws,
+                           COALESCE((SELECT SUM(pa.amount_minor) FROM payment_allocations pa WHERE pa.txn_id=t.id AND pa.status='active'),0) AS allocated
+                           FROM transactions t WHERE t.tenant_id=? AND t.contact_id=? AND t.kind IN ('payment','collection')", [$tid, $id]);
+            foreach ($ts as $t) {
+                if ($ws && (int)$t['ws'] !== (int)$ws) {
+                    continue;
+                }
+                $isRec = $t['kind'] === 'collection';
+                $voided = $t['status'] === 'voided';
+                $unalloc = (int)$t['amount_minor'] - (int)$t['allocated'];
+                $text = (string)($t['description'] ?? '') . ($t['reference'] ? ' · ref ' . $t['reference'] : '');
+                if (!$voided && $unalloc > 0) {
+                    $text .= ' — eşleştirilmemiş/avans: ' . number_format($unalloc / 100, 2, ',', '.');
+                }
+                $lines[] = ['date' => $t['txn_date'], 'sort' => 1, 'currency' => $t['currency'], 'workspace_id' => (int)$t['ws'], 'type' => ($isRec ? 'Tahsilat' : 'Ödeme') . ($voided ? ' (iptal)' : ''),
+                    'text' => $text, 'signed_minor' => $voided ? 0 : ($isRec ? -1 : 1) * (int)$t['amount_minor'], 'amount_minor' => (int)$t['amount_minor'], 'due_date' => null,
+                    'ref' => ['type' => 'transaction', 'id' => (int)$t['id']], 'status' => $t['status'], 'allocated_minor' => (int)$t['allocated'], 'unallocated_minor' => $voided ? 0 : $unalloc, 'reason' => $t['reason']];
+            }
         }
         usort($lines, fn($a, $b) => [$a['date'], $a['sort']] <=> [$b['date'], $b['sort']]);
         $groups = [];
@@ -414,7 +473,7 @@ final class SetupCtl
             }
             $out[] = ['workspace_id' => $g['workspace_id'], 'currency' => $g['currency'], 'opening_minor' => $opening, 'rows' => $rows, 'closing_minor' => $bal];
         }
-        Res::ok(['contact' => ['id' => $id, 'name' => $c['name'], 'tax_no' => $c['tax_no']], 'groups' => $out, 'note' => 'Pozitif bakiye: cari size borçlu; negatif: siz cariye borçlusunuz.']);
+        Res::ok(['contact' => ['id' => $id, 'name' => $c['name'], 'tax_no' => $c['tax_no']], 'groups' => $out, 'note' => 'Pozitif bakiye: cari size borçlu; negatif: siz cariye borçlusunuz. Her ödeme tek satırdır; faturalara dağıtımı ödeme ayrıntısında görünür.']);
     }
 
     // ---- projeler ----
@@ -475,7 +534,7 @@ final class SetupCtl
         if (!$p) {
             throw new ApiError('not_found', 'Proje bulunamadı.', 404);
         }
-        $ms = DB::all('SELECT m.*, COALESCE(x.paid,0) paid_minor FROM project_milestones m LEFT JOIN (SELECT entry_id, SUM(amount_minor) paid FROM transactions WHERE tenant_id=? AND status=\'posted\' GROUP BY entry_id) x ON x.entry_id=m.entry_id WHERE m.tenant_id=? AND m.project_id=? ORDER BY m.due_date', [$tid, $tid, $id]);
+        $ms = DB::all('SELECT m.*, COALESCE(x.paid,0) paid_minor FROM project_milestones m LEFT JOIN ' . Fin::PAID_SUB . ' x ON x.entry_id=m.entry_id WHERE m.tenant_id=? AND m.project_id=? ORDER BY m.due_date', [$tid, $tid, $id]);
         $qs = DB::all('SELECT * FROM project_quotes WHERE tenant_id=? AND project_id=? ORDER BY quote_date DESC', [$tid, $id]);
         Res::ok(['project' => $p, 'figures' => Pl::projectFigures($tid, $id), 'milestones' => $ms, 'quotes' => $qs]);
     }

@@ -24,8 +24,8 @@ Canlıya alma: **docs/NATRO-KURULUM.md**. Paket: `powershell -File tools\build.p
 
 ## Testler (yerelde)
 ```
-php app/tests/run.php                      # 302 API / güvenlik / finans testi (MariaDB 127.0.0.1:3307, fbmuh_test)
-cd e2e && node run.mjs && node run2.mjs    # gerçek tarayıcı testleri (Playwright; Chromium/Edge)
+php app/tests/run.php                      # 527 API / güvenlik / finans testi (MariaDB 127.0.0.1:3307, fbmuh_test)
+cd e2e && node run.mjs && node run2.mjs && node run3.mjs && node run4.mjs    # gerçek tarayıcı testleri (Playwright; Chromium/Edge)
 ```
 Sonuçlar: **docs/TEST-RAPORU.md**.
 

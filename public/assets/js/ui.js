@@ -111,7 +111,7 @@ export const pct = (bp) => `%${(Number(bp) / 100).toLocaleString('tr-TR', { maxi
 
 export const KIND_TR = {
   income: 'Gelir', expense: 'Gider', collection: 'Tahsilat', payment: 'Ödeme', transfer: 'Transfer', fx: 'Döviz', card_payment: 'Kart ödemesi',
-  loan_payment: 'Kredi taksiti', loan_proceeds: 'Kredi kullandırım', adjustment: 'Bakiye düzeltme',
+  loan_payment: 'Kredi taksiti', loan_proceeds: 'Kredi kullandırım', adjustment: 'Bakiye düzeltme', owner_in: 'İşletmeye para koyma', owner_out: 'İşletmeden para çekme',
 };
 export const STATE_BADGE = {
   paid: ['ok', 'Ödendi'], partial: ['warn', 'Kısmi'], open: ['info', 'Açık'], overdue: ['bad', 'Gecikmiş'], cancelled: ['', 'İptal'], unpaid: ['info', 'Ödenmedi'],

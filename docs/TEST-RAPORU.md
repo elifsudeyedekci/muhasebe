@@ -23,7 +23,7 @@ Gerçek HTTP (curl, çerez + CSRF) ile yerel sunucuya karşı; gerçek MariaDB. 
 | IP izin listesi | tekil, IPv4/IPv6 CIDR, geçersiz IP |
 
 ## 2) Tarayıcı (E2E) testleri — Playwright (Chromium)
-`e2e/run.mjs` **54 geçti**, `e2e/run2.mjs` **23 geçti**; **konsol hata/uyarı: 0**, CSP ihlali: 0.
+`e2e/run.mjs` **54**, `run2.mjs` **23**, `run3.mjs` **17**, `run4.mjs` **14 geçti** (sıra: run → run2 → run3 → run4); **konsol hata/uyarı: 0**, CSP ihlali: 0.
 Gerçek arayüzde: giriş + CAPTCHA/PoW, yanlış parola, admin 2FA kurulumu + kurtarma kodları, müşteri oluşturma (davet), davetle parola belirleme (zayıf parola reddi), müşteri onboarding (örnek veri yok), müşteri `#/admin`'e giremez, alan/hesap (EUR dahil), gelir/gider/iptal/çift tıklama, alacak→tahsilat (kalan 40.000,00 ₺), transfer, fatura (canlı KDV), kart + taksit + ödeme, kredi (12 taksit, kullandırım, ödeme), proje + hakediş, stok, şahsi fatura, tekrarlayan şablon, takvim, ekstre CSV içe aktarma (+tekrar yükleme), ekstreden hareket, cari ekstre, rapor CSV/XLSX indirme, tema, kur, müşteri 2FA, parola değişimi, yeni parola+2FA ile giriş, admin finans görünümü (salt okunur), admin denetim kaydı, **iPhone 13 emülasyonu**: alt sekme çubuğu, FAB ile gider ekleme, yatay taşma yok.
 
 ## 3) Üretim modu doğrulaması (yerel simülasyon, dist paketi, ayrı belge kökü/app dizini)
@@ -39,3 +39,9 @@ Gerçek arayüzde: giriş + CAPTCHA/PoW, yanlış parola, admin 2FA kurulumu + k
 
 ## Başarısız oldu / sonradan düzeltilen hatalar (şeffaflık)
 Testler sırasında bulunup düzeltilenler: stok tüketim maliyetinin "şirketler" kapsamında kaybolması; form "Kaydet" düğmesinin form dışında kalması (tıklayınca gönderilmiyordu); menü/FAB `currentTarget` hatası; sayfa değişince açık pencerelerin kalması; uyarı çıkaran dirty-state yarışı; PHP yığın izinde argüman (parola) sızma riski (`zend.exception_ignore_args`).
+
+## Master geliştirme turu (2026-10-19/20) — eklenen testler
+- PHP: **527 geçti / 0 başarısız** (önceki 302). Yeni: `t_02_z_payments.php` (vade, tek ödeme→çok fatura, avans, geri alma, idempotency, alış faturası+stok, stoksuz satış+teslimat, şahsi hesap, silme/düzenleme, yetki, bütünlük), `t_02_zz_home.php` (Test A–D: tahsilat, bağımsız avans/kök neden, avans eşleştirme, ana sayfa).
+- Migration 003 eski şemalı veri kopyası üzerinde doğrulandı: bakiyeler, işlem toplamı, fatura/kalem vadeleri, stok hareketleri birebir aynı; ödenen tutar kalem bazında eski yöntemle aynı; ikinci çalıştırma boş.
+- **Yapılamayan:** canlı (Natro) ortama dağıtım ve canlı veri üzerinde migration — yapılmadı; gerçek veritabanı yedeği/geri yükleme canlıda denenmedi. Yük/stres testi yok.
+- Test sırasında bulunup düzeltilenler: tek kalemli ödeme formunda kalem listesi yüklenmeden tutar girilince dağıtımın boş kalması (yarış); test API hız sınırı.

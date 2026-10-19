@@ -15,28 +15,54 @@ function calcLine(qtyM, priceMinor, discBp, vatBp) {
   return { net: Number(net), vat: Number(vat), total: Number(net + vat) };
 }
 
-export function invoiceForm({ kind, preset, cb }) {
+/**
+ * Fatura formu (yeni + düzenleme). Özellikler: isteğe bağlı vade (vadesiz / gün / tarih), satırda mevcut ürün, YENİ ürün kartı oluşturma,
+ * hizmet/serbest satır, “stoğa ekle” (alış) / “stoktan düş” (satış), stokta olmayan ürün uyarısı ve ertelenmiş teslimat.
+ * edit: GET /invoices/{id} yanıtı verilirse düzenleme kipinde açılır (PATCH).
+ */
+export function invoiceForm({ kind, preset, cb, edit = null }) {
   const ws = state.meta.workspaces.filter((w) => !w.archived);
   if (!ws.length) return toast('Önce bir işletme alanı oluşturun.', 'err');
   if (!state.meta.contacts.some((c) => !c.archived)) return toast('Önce bir cari (müşteri/tedarikçi) ekleyin.', 'err');
+  const I = edit ? edit.invoice : null;
+  kind = I ? I.kind : kind;
   const sales = kind === 'sales';
+  const hasPays = !!(edit && (edit.payments || []).length);
   const items = state.meta.items.filter((i) => !i.archived);
   const lines = [];
   const linesBox = h('div', { class: 'stack' });
   const totals = h('div', { class: 'card flat stack tight' });
   const inv = (state.meta.settings.invoice || {});
+  const stockInfo = {}; // item_id → {wh:{id:qty}, qty}
+  api.get('/stock/items').then((r) => { r.items.forEach((x) => { stockInfo[x.id] = x; }); lines.forEach((l) => l.refreshStock()); }).catch(() => {});
+
+  // ---- vade: vadesiz / gün / tarih ----
+  let dueDays = null;
+  const defDays = Number(inv.default_due_days ?? 0);
+  const dueInput = h('input', { class: 'input', type: 'date', value: I ? (I.due_date || '') : (defDays > 0 ? addDays(todayStr(), defDays) : '') });
+  const dueDaysInput = h('input', { class: 'input', type: 'number', min: 0, max: 3650, placeholder: 'gün', 'aria-label': 'Vade günü' });
+  const chipBox = h('div', { class: 'row tight' });
+  const issueInput = h('input', { class: 'input', type: 'date', value: I ? I.issue_date : todayStr() });
+  const setDueDays = (d) => { dueDays = d; dueInput.value = d === null ? '' : addDays(issueInput.value || todayStr(), d); dueDaysInput.value = d === null ? '' : String(d); drawChips(); };
+  const drawChips = () => mount(chipBox, [[null, 'Vadesiz'], [7, '7 gün'], [15, '15 gün'], [30, '30 gün'], [45, '45 gün'], [60, '60 gün']].map(([d, l]) => h('button', { type: 'button', class: 'btn sm' + (dueDays === d && (d !== null || !dueInput.value) ? ' primary' : ''), onclick: () => setDueDays(d) }, l)));
+  if (!I && defDays > 0) dueDays = defDays;
+  dueInput.addEventListener('change', () => { dueDays = null; dueDaysInput.value = ''; drawChips(); });
+  dueDaysInput.addEventListener('input', () => { const n = dueDaysInput.value === '' ? null : Number(dueDaysInput.value); if (n !== null && n >= 0) setDueDays(n); });
+  issueInput.addEventListener('change', () => { if (dueDays !== null) dueInput.value = addDays(issueInput.value || todayStr(), dueDays); });
+  drawChips();
+
   const header = {
-    workspace_id: h('select', { class: 'input' }, ws.map((w) => h('option', { value: w.id }, w.name))),
-    contact_id: h('select', { class: 'input' }, contactOptions(sales ? 'customer' : 'supplier', 'Cari seçin').map(([v, l]) => h('option', { value: v }, l))),
-    number: h('input', { class: 'input', type: 'text', maxlength: 60, placeholder: sales ? 'Fatura no' : 'Fatura no (zorunlu)' }),
-    issue_date: h('input', { class: 'input', type: 'date', value: todayStr() }),
-    due_date: h('input', { class: 'input', type: 'date', value: addDays(todayStr(), Number(inv.default_due_days ?? 30)) }),
-    currency: h('select', { class: 'input' }, CURRENCIES.map((c) => h('option', { value: c }, c))),
-    project_id: h('select', { class: 'input' }, projectOptions().map(([v, l]) => h('option', { value: v }, l))),
+    workspace_id: h('select', { class: 'input', disabled: hasPays }, ws.map((w) => h('option', { value: w.id, selected: I && w.id === I.workspace_id }, w.name))),
+    contact_id: h('select', { class: 'input', disabled: hasPays }, contactOptions(sales ? 'customer' : 'supplier', 'Cari seçin').map(([v, l]) => h('option', { value: v, selected: I && Number(v) === I.contact_id }, l))),
+    number: h('input', { class: 'input', type: 'text', maxlength: 60, placeholder: sales ? 'Fatura no' : 'Fatura no (zorunlu)', value: I ? (I.number || '') : '' }),
+    currency: h('select', { class: 'input', disabled: hasPays }, CURRENCIES.map((c) => h('option', { value: c, selected: I && c === I.currency }, c))),
+    project_id: h('select', { class: 'input' }, projectOptions().map(([v, l]) => h('option', { value: v, selected: I && Number(v) === Number(I.project_id) }, l))),
     status: h('select', { class: 'input' }, [['issued', 'Fatura kesildi / alındı'], ['planned', 'Planla (henüz kesilmedi)']].map(([v, l]) => h('option', { value: v }, l))),
-    note: h('textarea', { class: 'input', rows: 2, maxlength: 2000 }, inv.note || ''),
+    note: h('textarea', { class: 'input', rows: 2, maxlength: 2000 }, I ? (I.note || '') : (inv.note || '')),
   };
   if (preset && preset.contact_id) header.contact_id.value = preset.contact_id;
+  const deferBox = h('input', { type: 'checkbox', checked: !!(I && Number(I.defer_delivery)) });
+  const allStock = h('input', { type: 'checkbox', checked: false });
   const msg = h('div', { class: 'alert err hide', role: 'alert' });
   let lid = 0;
   const L = (label, el, cls = '') => { const id = 'inv_' + (++lid); el.id = id; return h('div', { class: 'field ' + cls }, h('label', { for: id }, label), el); };
@@ -47,58 +73,122 @@ export function invoiceForm({ kind, preset, cb }) {
       const q = qtyMilli(l.qty.value); const p = parseMoney(l.price.value);
       const d = Math.round(Number(String(l.disc.value || '0').replace(',', '.')) * 100); const v = Number(l.vat.value);
       if (q && p !== null && p >= 0 && d >= 0 && d <= 10000) { const c = calcLine(q, p, d, v); l.total.textContent = money(c.total, header.currency.value); sub += c.net; vat += c.vat; } else l.total.textContent = '—';
+      l.refreshStock();
     });
     mount(totals, h('div', { class: 'row between' }, 'KDV hariç ara toplam', h('b', null, money(sub, header.currency.value))), h('div', { class: 'row between' }, 'KDV', h('b', null, money(vat, header.currency.value))), h('div', { class: 'row between' }, h('b', null, 'Genel toplam'), h('b', null, money(sub + vat, header.currency.value))));
   };
-  const addLine = (init = {}) => {
-    const l = {
-      item: h('select', { class: 'input' }, [h('option', { value: '' }, 'Serbest satır'), ...items.map((i) => h('option', { value: i.id }, (i.code ? i.code + ' · ' : '') + i.name))]),
-      desc: h('input', { class: 'input', type: 'text', maxlength: 300, placeholder: 'Açıklama' }),
-      qty: h('input', { class: 'input', type: 'text', inputmode: 'decimal', value: '1' }),
-      price: h('input', { class: 'input', type: 'text', inputmode: 'decimal', placeholder: '0,00' }),
-      disc: h('input', { class: 'input', type: 'text', inputmode: 'decimal', value: '0' }),
-      vat: h('select', { class: 'input' }, vatOptions().map(([v, l]) => h('option', { value: v, selected: v === 2000 }, l))),
-      wh: h('select', { class: 'input hide' }, [h('option', { value: '' }, 'Depo yok (stok izleme yok)'), ...state.meta.warehouses.filter((w) => !w.archived).map((w) => h('option', { value: w.id }, w.name))]),
-      total: h('div', { class: 'num' }, '—'),
-    };
+
+  const addLine = (init = null) => {
+    const l = { id: init ? init.id : null };
+    l.item = h('select', { class: 'input' }, [h('option', { value: '' }, 'Serbest satır (stok kartı yok)'), h('option', { value: '__new' }, '➕ Yeni ürün / hizmet kartı oluştur'), ...items.map((i) => h('option', { value: i.id }, (i.code ? i.code + ' · ' : '') + i.name + (i.kind === 'service' ? ' (hizmet)' : '')))]);
+    l.desc = h('input', { class: 'input', type: 'text', maxlength: 300, placeholder: 'Açıklama / ürün adı' });
+    l.qty = h('input', { class: 'input', type: 'text', inputmode: 'decimal', value: '1' });
+    l.price = h('input', { class: 'input', type: 'text', inputmode: 'decimal', placeholder: '0,00' });
+    l.disc = h('input', { class: 'input', type: 'text', inputmode: 'decimal', value: '0' });
+    l.vat = h('select', { class: 'input' }, vatOptions().map(([v, lab]) => h('option', { value: v, selected: v === 2000 }, lab)));
+    l.newKind = h('select', { class: 'input' }, [['product', 'Ürün (stok takipli olabilir)'], ['service', 'Hizmet (nakliye, işçilik vb. — stok yok)']].map(([v, lab]) => h('option', { value: v }, lab)));
+    l.newCode = h('input', { class: 'input', type: 'text', maxlength: 60, placeholder: 'Ürün kodu (isteğe bağlı)' });
+    l.newUnit = h('input', { class: 'input', type: 'text', maxlength: 20, value: 'adet' });
+    l.stock = h('input', { type: 'checkbox' });
+    l.wh = h('select', { class: 'input' }, [...state.meta.warehouses.filter((w) => !w.archived).map((w) => h('option', { value: w.id }, w.name)), ...(state.meta.warehouses.some((w) => !w.archived) ? [] : [h('option', { value: '' }, 'Ana Depo (otomatik açılır)')])]);
+    l.total = h('div', { class: 'num' }, '—');
+    l.hint = h('div', { class: 'hint' });
+    l.stockHint = h('div', { class: 'hint' });
+    l.newBox = h('div', { class: 'form-grid hide' }, L('Kart türü', l.newKind), L('Kod', l.newCode), L('Birim', l.newUnit), h('div', { class: 'full' }, l.hint));
+    l.stockBox = h('div', { class: 'form-grid hide' }, h('div', { class: 'field' }, h('label', { class: 'check' }, l.stock, sales ? 'Stoktan düş (teslim edilen miktar kadar)' : 'Stoğa ekle')), L('Depo', l.wh), h('div', { class: 'full' }, l.stockHint));
     const row = h('div', { class: 'card flat stack tight' },
-      h('div', { class: 'form-grid' }, L('Ürün / hizmet', l.item), L('Açıklama *', l.desc), L('Miktar', l.qty), L('Birim fiyat', l.price), L('İskonto %', l.disc), L('KDV', l.vat), L('Depo', l.wh, 'wh-wrap')),
+      h('div', { class: 'form-grid' }, L('Ürün / hizmet', l.item), L('Açıklama *', l.desc), L('Miktar', l.qty), L('Birim fiyat', l.price), L('İskonto %', l.disc), L('KDV', l.vat)),
+      l.newBox, l.stockBox,
       h('div', { class: 'row between' }, h('button', { class: 'btn sm ghost', type: 'button', onclick: () => { lines.splice(lines.indexOf(l), 1); row.remove(); recalc(); } }, '🗑 Satırı sil'), h('div', null, 'Satır toplamı: ', l.total)));
     l.row = row;
+    const isProduct = () => { if (l.item.value === '__new') return l.newKind.value === 'product'; const it = items.find((i) => i.id === Number(l.item.value)); return !!(it && it.kind === 'product'); };
+    l.syncUi = () => {
+      l.newBox.classList.toggle('hide', l.item.value !== '__new');
+      l.stockBox.classList.toggle('hide', !isProduct());
+      l.wh.closest('.field').classList.toggle('hide', !l.stock.checked);
+      l.refreshStock();
+    };
+    l.refreshStock = () => {
+      if (!isProduct() || !l.stock.checked) { l.stockHint.textContent = ''; return; }
+      if (l.item.value === '__new') { l.stockHint.textContent = sales ? 'Yeni kartın stoğu 0’dır: satış “karşılanmamış (bekleyen teslimat)” olarak izlenir.' : 'Yeni karta bu faturadaki miktar kadar stok girişi yapılır.'; return; }
+      const si = stockInfo[Number(l.item.value)];
+      if (!si) { l.stockHint.textContent = ''; return; }
+      const whId = l.wh.value ? Number(l.wh.value) : null;
+      const have = whId && si.by_warehouse && si.by_warehouse[whId] !== undefined ? si.by_warehouse[whId] : si.qty_milli;
+      const q = qtyMilli(l.qty.value) || 0;
+      if (sales && !deferBox.checked) {
+        l.stockHint.textContent = q > have ? `⚠ Stokta ${fmtQty(Math.max(have, 0))} ${si.unit} var; ${fmtQty(q - Math.max(have, 0))} ${si.unit} karşılanamayacak ve “bekleyen teslimat” olarak ayrı izlenecek (stok eksiye düşmez).` : `Depoda ${fmtQty(have)} ${si.unit} var.`;
+      } else l.stockHint.textContent = sales ? 'Teslimat ertelendi: stok teslim işlenince düşer.' : `Mevcut stok ${fmtQty(have)} ${si.unit}; fatura sonrası ${fmtQty(have + q)}.`;
+    };
     l.item.addEventListener('change', () => {
       const it = items.find((i) => i.id === Number(l.item.value));
-      l.wh.classList.toggle('hide', !(it && it.kind === 'product'));
-      if (it) { l.desc.value = it.name; if (sales) l.price.value = plain(it.sale_price_minor); l.vat.value = String(it.vat_rate_bp); }
-      recalc();
+      if (it) { l.desc.value = it.name; if (sales) l.price.value = plain(it.sale_price_minor); l.vat.value = String(it.vat_rate_bp); l.stock.checked = it.kind === 'product' && (sales || allStock.checked); }
+      if (l.item.value === '__new') l.stock.checked = (l.newKind.value === 'product') && (allStock.checked || sales);
+      l.syncUi(); recalc();
+    });
+    l.newKind.addEventListener('change', () => { if (l.newKind.value === 'service') l.stock.checked = false; l.syncUi(); });
+    l.stock.addEventListener('change', l.syncUi);
+    l.wh.addEventListener('change', l.refreshStock);
+    l.desc.addEventListener('blur', async () => { // aynı/benzer ürün kartı var mı?
+      if (l.item.value !== '__new' || !l.desc.value.trim()) return;
+      try {
+        const r = await api.get('/stock/match', { name: l.desc.value.trim(), code: l.newCode.value.trim() });
+        if (r.exact) l.hint.textContent = `“${r.exact.name}” adlı kart zaten var: bu satır mevcut karta bağlanır (yeni kart açılmaz).`;
+        else if (r.similar.length) { mount(l.hint, 'Benzer kartlar var — aynı ürünse listeden seçin: ', r.similar.map((x) => h('button', { type: 'button', class: 'btn sm', onclick: () => { l.item.value = String(x.id); l.item.dispatchEvent(new Event('change')); } }, x.name))); } else l.hint.textContent = 'Yeni kart oluşturulacak.';
+      } catch { /* öneri alınamadı: sorun değil */ }
     });
     row.addEventListener('input', recalc);
     row.addEventListener('change', recalc);
     lines.push(l); linesBox.appendChild(row);
-    if (init.desc) l.desc.value = init.desc;
-    recalc();
+    if (init) { // düzenleme: mevcut satırı doldur
+      l.item.value = init.item_id ? String(init.item_id) : '';
+      l.desc.value = init.description; l.qty.value = fmtQty(init.qty_milli); l.price.value = plain(init.unit_price_minor); l.disc.value = String(init.discount_bp / 100).replace('.', ','); l.vat.value = String(init.vat_rate_bp);
+      l.stock.checked = !!init.tracked; if (init.warehouse_id) l.wh.value = String(init.warehouse_id);
+    }
+    l.syncUi(); recalc();
+    return l;
   };
   header.currency.addEventListener('change', recalc);
-  addLine();
+  allStock.addEventListener('change', () => { lines.forEach((l) => { const prod = l.item.value === '__new' ? l.newKind.value === 'product' : (items.find((i) => i.id === Number(l.item.value)) || {}).kind === 'product'; if (prod) l.stock.checked = allStock.checked; l.syncUi(); }); });
+  deferBox.addEventListener('change', recalc);
+  if (edit) edit.lines.forEach((x) => addLine(x)); else addLine();
+  const stockOpts = sales
+    ? h('div', { class: 'card flat stack tight' }, h('label', { class: 'check' }, deferBox, 'Ürünleri şimdi teslim etme (stok, teslimat işlenince düşsün)'), h('div', { class: 'hint' }, 'Satış faturası ile ürünün teslimi ayrı izlenir. Stokta yeterli ürün yoksa satış yine kaydedilir; eksik miktar “bekleyen teslimat” olur, stok eksiye düşmez.'))
+    : h('div', { class: 'card flat stack tight' }, h('label', { class: 'check' }, allStock, 'Faturadaki ürünleri stoğa ekle'), h('div', { class: 'hint' }, 'İşaretlerseniz ürün satırları stoğa girer; hizmet/nakliye satırları stok ürünü sayılmaz. Her satırda ayrıca seçebilirsiniz. Fatura kaydı ile stok hareketi ayrı şeylerdir.'));
   const body = h('div', { class: 'stack' }, msg,
-    h('div', { class: 'form-grid' }, L('Alan', header.workspace_id), L(sales ? 'Müşteri *' : 'Tedarikçi *', header.contact_id), L('Fatura no', header.number), L('Durum', header.status), L('Fatura tarihi', header.issue_date), L('Vade', header.due_date), L('Para birimi', header.currency), L('Proje', header.project_id), L('Not', header.note, 'full')),
-    h('h3', null, 'Satırlar'), linesBox, h('div', null, h('button', { class: 'btn sm', type: 'button', onclick: () => addLine() }, '＋ Satır ekle')), totals);
+    h('div', { class: 'form-grid' }, L('Alan', header.workspace_id), L(sales ? 'Müşteri *' : 'Tedarikçi *', header.contact_id), L('Fatura no', header.number), edit ? null : L('Durum', header.status), L('Fatura tarihi', issueInput),
+      L('Para birimi', header.currency), L('Proje', header.project_id)),
+    h('div', { class: 'card flat stack tight' }, h('div', { class: 'row between' }, h('b', null, 'Vade (isteğe bağlı)'), chipBox), h('div', { class: 'form-grid' }, L('Vade tarihi', dueInput, ''), L('veya vade günü', dueDaysInput, '')), h('div', { class: 'hint' }, 'Boş bırakırsanız fatura vadesiz kaydedilir; gecikmiş borç/alacak olarak raporlanmaz.')),
+    L('Not', header.note, 'full'),
+    hasPays ? h('div', { class: 'alert warn small' }, 'Bu faturada ödeme/tahsilat dağıtımı var: cari, alan ve para birimi değiştirilemez; toplam, ödenen tutarın altına düşemez.') : null,
+    h('h3', null, 'Satırlar'), stockOpts, linesBox, h('div', null, h('button', { class: 'btn sm', type: 'button', onclick: () => addLine() }, '＋ Satır ekle')), totals);
   const key = (window.crypto.randomUUID ? window.crypto.randomUUID().replace(/-/g, '') : String(Math.random()).slice(2) + Date.now());
-  const btn = h('button', { class: 'btn primary', type: 'button' }, sales ? 'Faturayı kaydet' : 'Alış faturasını kaydet');
-  const m = modal({ title: sales ? 'Satış faturası' : 'Alış faturası', wide: true, body, foot: [h('button', { class: 'btn', type: 'button', onclick: () => m.close() }, 'Vazgeç'), btn], dirty: () => true });
+  const btn = h('button', { class: 'btn primary', type: 'button' }, edit ? 'Değişiklikleri kaydet' : sales ? 'Faturayı kaydet' : 'Alış faturasını kaydet');
+  const m = modal({ title: (edit ? 'Faturayı düzenle — ' : '') + (sales ? 'Satış faturası' : 'Alış faturası'), wide: true, body, foot: [h('button', { class: 'btn', type: 'button', onclick: () => m.close() }, 'Vazgeç'), btn], dirty: () => true });
   btn.addEventListener('click', async () => {
     msg.classList.add('hide');
     const ls = [];
     for (const [i, l] of lines.entries()) {
       const q = qtyMilli(l.qty.value); const p = parseMoney(l.price.value); const d = Math.round(Number(String(l.disc.value || '0').replace(',', '.')) * 100);
       if (!l.desc.value.trim() || !q || p === null || p < 0 || !(d >= 0 && d <= 10000)) { msg.textContent = `${i + 1}. satırda açıklama, miktar, fiyat ve iskonto değerlerini kontrol edin.`; msg.classList.remove('hide'); return; }
-      ls.push({ description: l.desc.value.trim(), item_id: idv(l.item.value), warehouse_id: idv(l.wh.value), qty_milli: q, unit_price_minor: p, discount_bp: d, vat_rate_bp: Number(l.vat.value) });
+      const o = { description: l.desc.value.trim(), qty_milli: q, unit_price_minor: p, discount_bp: d, vat_rate_bp: Number(l.vat.value) };
+      if (l.id) o.id = l.id;
+      if (l.item.value === '__new') { o.new_item = { kind: l.newKind.value, code: l.newCode.value.trim() || null, unit: l.newUnit.value.trim() || 'adet' }; if (l.newKind.value === 'product') o.stock = l.stock.checked; } else if (l.item.value) {
+        o.item_id = Number(l.item.value);
+        if ((items.find((x) => x.id === o.item_id) || {}).kind === 'product') o.stock = l.stock.checked;
+      }
+      if (o.stock) o.warehouse_id = l.wh.value ? Number(l.wh.value) : null;
+      ls.push(o);
     }
     if (!header.contact_id.value) { msg.textContent = 'Cari seçin.'; msg.classList.remove('hide'); return; }
     btn.disabled = true;
+    const common = { issue_date: issueInput.value, due_date: dueInput.value || null, number: header.number.value.trim() || null, project_id: idv(header.project_id.value), note: header.note.value, lines: ls, defer_delivery: sales ? deferBox.checked : false };
     try {
-      const r = await api.post('/invoices', { kind, workspace_id: Number(header.workspace_id.value), contact_id: Number(header.contact_id.value), number: header.number.value.trim() || null, issue_date: header.issue_date.value, due_date: header.due_date.value || null, currency: header.currency.value, project_id: idv(header.project_id.value), status: header.status.value, note: header.note.value, lines: ls }, { idem: key });
+      let r;
+      if (edit) r = await api.patch('/invoices/' + I.id, { ...common, ...(hasPays ? {} : { contact_id: Number(header.contact_id.value), workspace_id: Number(header.workspace_id.value), currency: header.currency.value }) });
+      else r = await api.post('/invoices', { kind, workspace_id: Number(header.workspace_id.value), contact_id: Number(header.contact_id.value), currency: header.currency.value, status: header.status.value, ...common }, { idem: key });
       (r.warnings || []).forEach((w) => toast(w, 'err'));
-      m.close(true); toast('Fatura kaydedildi', 'ok'); await loadMeta(); cb && cb();
+      m.close(true); toast(edit ? 'Fatura güncellendi' : (r.new_items ? `Fatura kaydedildi; ${r.new_items} yeni ürün/hizmet kartı açıldı` : 'Fatura kaydedildi'), 'ok'); await loadMeta(); cb && cb();
     } catch (e) { msg.textContent = e.message; msg.classList.remove('hide'); btn.disabled = false; }
   });
 }

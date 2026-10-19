@@ -95,18 +95,20 @@ final class ReportCtl
             $rem = (int)$e['remaining_minor'];
             $kind = $e['kind'];
             self::addTo($ob, $c, $kind, $rem);
-            if ($e['due_date'] < $today) {
+            if ($e['due_date'] === null) {
+                // vadesiz: gecikmiş sayılmaz
+            } elseif ($e['due_date'] < $today) {
                 self::addTo($ob, $c, 'overdue_' . $kind, $rem);
             } elseif ($e['due_date'] <= Util::addDays($today, 30)) {
                 self::addTo($ob, $c, 'due30_' . $kind, $rem);
             }
         }
-        $short = fn($e) => ['id' => (int)$e['id'], 'kind' => $e['kind'], 'title' => $e['title'], 'currency' => $e['currency'], 'remaining_minor' => (int)$e['remaining_minor'], 'due_date' => $e['due_date'], 'source' => $e['source'], 'days_overdue' => $e['due_date'] < $today ? (int)((strtotime($today) - strtotime($e['due_date'])) / 86400) : 0];
-        usort($open, fn($a, $b) => $a['due_date'] <=> $b['due_date']);
-        $overduePay = array_slice(array_map($short, array_filter($open, fn($e) => $e['kind'] === 'payable' && $e['due_date'] < $today && $e['source'] !== 'personal_bill')), 0, 8);
-        $upPay = array_slice(array_map($short, array_filter($open, fn($e) => $e['kind'] === 'payable' && $e['due_date'] >= $today && $e['due_date'] <= Util::addDays($today, 14))), 0, 8);
-        $expRec = array_slice(array_map($short, array_filter($open, fn($e) => $e['kind'] === 'receivable' && $e['due_date'] <= Util::addDays($today, 30))), 0, 8);
-        $bills = array_slice(array_map($short, array_filter($open, fn($e) => $e['source'] === 'personal_bill' && $e['due_date'] <= Util::addDays($today, 14))), 0, 8);
+        $short = fn($e) => ['id' => (int)$e['id'], 'kind' => $e['kind'], 'title' => $e['title'], 'currency' => $e['currency'], 'remaining_minor' => (int)$e['remaining_minor'], 'due_date' => $e['due_date'], 'source' => $e['source'], 'days_overdue' => ($e['due_date'] !== null && $e['due_date'] < $today) ? (int)((strtotime($today) - strtotime($e['due_date'])) / 86400) : 0];
+        usort($open, fn($a, $b) => ($a['due_date'] ?? '9999-12-31') <=> ($b['due_date'] ?? '9999-12-31'));
+        $overduePay = array_slice(array_map($short, array_filter($open, fn($e) => $e['kind'] === 'payable' && $e['due_date'] !== null && $e['due_date'] < $today && $e['source'] !== 'personal_bill')), 0, 8);
+        $upPay = array_slice(array_map($short, array_filter($open, fn($e) => $e['kind'] === 'payable' && $e['due_date'] !== null && $e['due_date'] >= $today && $e['due_date'] <= Util::addDays($today, 14))), 0, 8);
+        $expRec = array_slice(array_map($short, array_filter($open, fn($e) => $e['kind'] === 'receivable' && $e['due_date'] !== null && $e['due_date'] <= Util::addDays($today, 30))), 0, 8);
+        $bills = array_slice(array_map($short, array_filter($open, fn($e) => $e['source'] === 'personal_bill' && $e['due_date'] !== null && $e['due_date'] <= Util::addDays($today, 14))), 0, 8);
         $toIssue = DB::all("SELECT i.id,i.number,i.issue_date,i.total_minor,i.currency,c.name AS contact_name FROM invoices i JOIN contacts c ON c.id=i.contact_id
                             WHERE i.tenant_id=? AND i.status='planned' AND i.kind='sales' AND i.issue_date<=? ORDER BY i.issue_date LIMIT 8", [$tid, Util::addDays($today, 7)]);
         $sched = self::schedule(['from' => $today, 'to' => Util::addDays($today, 30), 'scope' => $f['scope'], 'workspace_id' => $f['workspace_id'], 'overdue' => '1'], $tid);
@@ -139,7 +141,7 @@ final class ReportCtl
         $to = $f['to'] ?? Util::addDays($today, 60);
         $items = [];
         foreach (Fin::entriesOpen($tid) as $e) {
-            if ((int)$e['remaining_minor'] <= 0 || $e['due_date'] < $from || $e['due_date'] > $to || ($ws !== null && !in_array((int)$e['workspace_id'], $ws, true))) {
+            if ((int)$e['remaining_minor'] <= 0 || $e['due_date'] === null || $e['due_date'] < $from || $e['due_date'] > $to || ($ws !== null && !in_array((int)$e['workspace_id'], $ws, true))) {
                 continue;
             }
             if ($f['currency'] && $e['currency'] !== $f['currency']) {
@@ -186,7 +188,7 @@ final class ReportCtl
         $out = [];
         foreach (Fin::entriesOpen($tid) as $e) {
             $rem = (int)$e['remaining_minor'];
-            if ($rem <= 0) {
+            if ($rem <= 0 || $e['due_date'] === null) {
                 continue;
             }
             $days = (int)((strtotime($e['due_date']) - strtotime($today)) / 86400);
@@ -272,7 +274,7 @@ final class ReportCtl
         $f['from'] ??= Util::addMonths(substr($today, 0, 8) . '01', -5, 1);
         $f['to'] ??= $today;
         $ws = self::wsIds($tid, $f);
-        $w = "t.tenant_id=? AND t.status='posted' AND t.txn_date BETWEEN ? AND ? AND t.kind NOT IN ('transfer','fx','adjustment')";
+        $w = "t.tenant_id=? AND t.status='posted' AND t.txn_date BETWEEN ? AND ? AND t.kind NOT IN ('transfer','fx','adjustment','owner_in','owner_out')";
         $p = [$tid, $f['from'], $f['to']];
         if ($ws !== null) {
             $w .= ' AND t.workspace_id IN (' . implode(',', $ws ?: [0]) . ')';
@@ -323,7 +325,7 @@ final class ReportCtl
             if ($rem <= 0 || ($ws !== null && !in_array((int)$e['workspace_id'], $ws, true))) {
                 continue;
             }
-            $late = (int)((strtotime($today) - strtotime($e['due_date'])) / 86400);
+            $late = $e['due_date'] === null ? 0 : (int)((strtotime($today) - strtotime($e['due_date'])) / 86400);
             $b = $late <= 0 ? 'current' : ($late <= 30 ? 'd30' : ($late <= 60 ? 'd60' : ($late <= 90 ? 'd90' : 'd90p')));
             $name = $e['contact_id'] ? ($names[(int)$e['contact_id']] ?? '—') : '(Cari yok)';
             $key = $name . '|' . $e['currency'];

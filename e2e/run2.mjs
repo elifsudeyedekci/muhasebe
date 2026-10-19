@@ -24,7 +24,7 @@ const toastSeen = async (re) => { await page.locator('.toast').filter({ hasText:
 
 try {
   await login(page, CUST, CPASS);
-  await page.getByText('Eldeki para').waitFor({ timeout: 20000 });
+  await page.getByText('Kasa + banka', { exact: true }).waitFor({ timeout: 20000 });
 
   section('Kredi kartı');
   await go('cards', 'Kartlar & Krediler');
@@ -108,7 +108,7 @@ try {
 
   await go('reconcile', 'Banka Mutabakatı');
   const csv = path.join(ROOT, 'e2e', 'ekstre.csv');
-  const today = new Date().toISOString().slice(0, 10).split('-').reverse().join('.');
+  const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Istanbul' }).format(new Date()).split('-').reverse().join('.');
   fs.writeFileSync(csv, `Tarih;Açıklama;Tutar\n${today};POS TAHSILAT;250,00\n${today};KOMISYON;-5,00\n${today};KOMISYON;-5,00\n`);
   await page.locator('input[type=file]').setInputFiles(csv);
   await page.getByText('Sütunları eşleştirin').waitFor();
@@ -159,7 +159,7 @@ try {
 
   await go('settings?tab=security', 'Ayarlar');
   await page.getByRole('button', { name: 'Etkinleştir' }).click();
-  await page.waitForFunction(() => document.querySelectorAll('.modal .mono').length > 0, null, { timeout: 8000 }).catch(() => {});
+  await page.locator('.modal .mono').first().waitFor({ timeout: 8000 }).catch(() => {});
   const secret = (await modal().locator('.mono').first().textContent()).replace(/\s/g, '');
   await modal().getByLabel('6 haneli kod').fill(totp(secret));
   await modal().getByRole('button', { name: 'Etkinleştir' }).click();
@@ -177,7 +177,8 @@ try {
   await page.getByRole('button', { name: /Çıkış yap/ }).click();
   await page.getByRole('button', { name: 'Giriş yap' }).waitFor({ timeout: 15000 });
   await login(page, CUST, NP, secret, 1);
-  await page.getByText('Eldeki para').waitFor({ timeout: 20000 });
+  fs.writeFileSync(path.join(ROOT, 'e2e', '.state.json'), JSON.stringify({ pass: NP, secret })); // run3.mjs bu bilgiyle girer
+  await page.getByText('Kasa + banka', { exact: true }).waitFor({ timeout: 20000 });
   ok(true, 'yeni parola + 2FA ile giriş');
   await go('notifications', 'Bildirim Merkezi');
   await shot(page, '28-notifications');

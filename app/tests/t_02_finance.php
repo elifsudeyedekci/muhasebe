@@ -246,7 +246,11 @@ eq(plTotals($A)['expense_minor'], $exp0 + tl(200), 'tüketim maliyeti (2 × 100 
 $pf2 = $A->get("/projects/$PR")['json']['figures'];
 eq($pf2['cost_minor'], tl(4500) + tl(200), 'proje maliyetine yalnızca tüketim eklenir');
 $mv2 = $A->post('/stock/movements', ['item_id' => $IT, 'warehouse_id' => $WH, 'kind' => 'out', 'qty_milli' => 9000, 'move_date' => $today]);
-check(!empty($mv2['json']['warning']), 'negatif stok uyarısı verilir');
+eq($mv2['status'], 409, 'stok eksiye düşürülemez (varsayılan politika)');
+check($A->req('PUT', '/settings', ['stock' => ['allow_negative' => true]])['ok'], 'negatif stok ayarı açılır');
+$mv2 = $A->post('/stock/movements', ['item_id' => $IT, 'warehouse_id' => $WH, 'kind' => 'out', 'qty_milli' => 9000, 'move_date' => $today]);
+check(!empty($mv2['json']['warning']), 'negatif stok uyarısı verilir (ayar açıkken)');
+check($A->req('PUT', '/settings', ['stock' => ['allow_negative' => false]])['ok'], 'negatif stok ayarı kapatılır');
 
 section('Finansal #14-15: iptal/düzeltme geçmişi, çift gönderim');
 $ik = bin2hex(random_bytes(10));
@@ -325,7 +329,7 @@ $ag = $A->get('/reports/aging', ['kind' => 'payable'])['json'];
 check(isset($ag['totals']['TRY']['total_minor']), 'yaşlandırma raporu');
 $stm = $A->get("/contacts/$CUST/statement")['json'];
 check(!empty($stm['groups']), 'cari ekstre üretilir');
-eq($stm['groups'][0]['closing_minor'], (int)DB::val("SELECT SUM(CASE WHEN e.kind='receivable' THEN e.amount_minor ELSE -e.amount_minor END) - COALESCE((SELECT SUM(t.amount_minor) FROM transactions t JOIN entries e2 ON e2.id=t.entry_id WHERE t.tenant_id=? AND e2.contact_id=? AND e2.currency='TRY' AND t.status='posted'),0) FROM entries e WHERE e.tenant_id=? AND e.contact_id=? AND e.currency='TRY' AND e.status='open'", [$ALFA, $CUST, $ALFA, $CUST]), 'cari ekstre kapanış bakiyesi kayıtlarla uyuşur');
+eq($stm['groups'][0]['closing_minor'], (int)DB::val("SELECT SUM(CASE WHEN e.kind='receivable' THEN e.amount_minor ELSE -e.amount_minor END) - COALESCE((SELECT SUM(pa.amount_minor) FROM payment_allocations pa JOIN transactions t ON t.id=pa.txn_id JOIN entries e2 ON e2.id=pa.entry_id WHERE pa.tenant_id=? AND pa.status='active' AND e2.contact_id=? AND e2.currency='TRY' AND t.status='posted'),0) FROM entries e WHERE e.tenant_id=? AND e.contact_id=? AND e.currency='TRY' AND e.status='open'", [$ALFA, $CUST, $ALFA, $CUST]), 'cari ekstre kapanış bakiyesi kayıtlarla uyuşur');
 check($A->req('PUT', '/budgets', ['month' => substr($today, 0, 7), 'category_id' => $catId('expense', 'Malzeme'), 'amount_minor' => tl(2000)])['ok'], 'bütçe girilir');
 $bd = $A->get('/reports/budget', ['month' => substr($today, 0, 7), 'scope' => 'business'])['json']['rows'][0];
 eq([$bd['budget_minor'], $bd['actual_minor']], [tl(2000), tl(1000)], 'bütçe-gerçekleşen karşılaştırması');

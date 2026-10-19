@@ -68,3 +68,10 @@ Restore tabloların üzerine yazar; önce mevcut durumun yedeğini alın.
 - Müşteri kilitlendi: Yönetici › Müşteri › "Kilidi aç". Müşteri parolası: "Parola sıfırla" (bağlantı üretir, ekranda gösterilir).
 - Yönetici IP kısıtı (isteğe bağlı): `app/config.php` → `'admin_allow_ips' => ['203.0.113.7', '198.51.100.0/24']`
 - E-posta (davet/sıfırlama) hosting `mail()` ile gider; ulaşmazsa SPF/DKIM'i cPanel › Email Deliverability'den düzeltin. Davet/sıfırlama bağlantısı yönetici ekranında da gösterilir.
+
+## Güncelleme (003 + 004 migration) — canlıda uygulamadan önce
+1. **Yedek:** `php app/bin/backup.php` (SQL + belgeler) ve çıkan dosyaları bilgisayarınıza indirin.
+2. Eski `app/src`, `app/migrations`, `public` klasörlerinin kopyasını alın (geri dönüş).
+3. Yeni `funbreak-app.zip` / `funbreak-public.zip` dosyalarını yükleyin (**config.php ve storage/ üzerine yazmayın**).
+4. `php app/bin/migrate.php` — 003 ve 004 yalnızca ekleme yapar; mevcut ödemeler `payment_allocations` tablosuna birebir kopyalanır, vadeler değişmez.
+5. Kontrol: Ana ekran toplamları, bir cari ekstresi ve bir fatura kalanı eskisiyle aynı olmalı. Sorun olursa kodu eski kopyayla değiştirin ve `restore.php` ile yedeği geri yükleyin.

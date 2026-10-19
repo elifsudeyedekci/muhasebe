@@ -3,6 +3,7 @@ import { state } from '../state.js';
 import { h, mount, loading, money, date, table, emptyState, modal, errToast, toast, confirmDialog, KIND_TR, signClass, multi, menu, seg } from '../ui.js';
 import { accountForm, workspaceForm, adjustForm } from '../forms_core.js';
 import { loadMeta } from '../state.js';
+import { ownerAccountModal, sourceLabel } from '../forms_pay.js';
 
 async function ledger(a) {
   const body = h('div', null, h('div', { class: 'loading' }, h('span', { class: 'spinner' })));
@@ -34,17 +35,18 @@ export default async function render(ctx) {
     visible.filter((a) => !a.archived).forEach((a) => { totals[a.currency] = (totals[a.currency] || 0) + a.balance_minor; });
     mount(el,
       ctx.head('Hesaplar & Kasalar', 'Banka hesapları, nakit kasalar ve işletme alanlarınız. Bakiyeler hareketlerden hesaplanır.', readonly ? null : [
-        h('button', { class: 'btn', onclick: () => workspaceForm(null, ctx.refresh) }, '＋ Alan'), h('button', { class: 'btn primary', onclick: () => accountForm(null, ctx.refresh) }, '＋ Hesap / kasa')]),
+        h('button', { class: 'btn', onclick: () => workspaceForm(null, ctx.refresh) }, '＋ Alan'), h('button', { class: 'btn', onclick: () => ownerAccountModal() }, '🤝 Ortak cari'), h('button', { class: 'btn primary', onclick: () => accountForm(null, ctx.refresh) }, '＋ Hesap / kasa')]),
       h('div', { class: 'row between' }, h('div', { class: 'muted' }, 'Toplam: ', Object.keys(totals).length ? Object.entries(totals).map(([c, v]) => h('b', { class: 'nowrap' }, money(v, c) + '  ')) : '—'),
         h('label', { class: 'check small' }, h('input', { type: 'checkbox', checked: showArchived.v, onchange: (e) => { showArchived.v = e.target.checked; draw(); } }), 'Arşivlenenleri göster')),
       byWs.length ? byWs.map(({ w, accs }) => h('div', { class: 'card stack' },
         h('div', { class: 'card-title' }, h('span', null, w.name, ' ', h('span', { class: 'badge ' + (w.kind === 'personal' ? 'info' : 'pri') }, w.kind === 'personal' ? 'Şahsi' : 'İşletme'), w.archived ? h('span', { class: 'badge' }, 'Arşiv') : null),
           readonly ? null : h('div', { class: 'row tight' },
             h('button', { class: 'btn sm', onclick: () => workspaceForm(w, ctx.refresh) }, 'Düzenle'),
+            h('button', { class: 'btn sm ghost', title: 'Alan boşsa silinir', onclick: async () => { if (!await confirmDialog({ title: 'Alanı sil', text: '“' + w.name + '” silinsin mi? İçinde hesap, fatura veya başka kayıt olan alanlar silinemez; arşivleyebilirsiniz.', ok: 'Sil', danger: true })) return; try { await api.del('/workspaces/' + w.id); await loadMeta(); ctx.refresh(); toast('Alan silindi', 'ok'); } catch (e) { errToast(e); } } }, 'Sil'),
             h('button', { class: 'btn sm', onclick: async () => { try { await api.patch('/workspaces/' + w.id, { archived: !w.archived }); await loadMeta(); ctx.refresh(); } catch (e) { errToast(e); } } }, w.archived ? 'Geri al' : 'Arşivle'))),
         accs.length ? table({
           cols: [
-            { key: 'name', label: 'Hesap', render: (a) => h('span', null, a.kind === 'cash' ? '💵 ' : '🏦 ', h('b', null, a.name), a.archived ? h('span', { class: 'badge' }, 'Arşiv') : null, h('div', { class: 'xs muted' }, [a.bank_name, a.iban].filter(Boolean).join(' · '))) },
+            { key: 'name', label: 'Hesap', render: (a) => h('span', null, a.kind === 'cash' ? '💵 ' : '🏦 ', h('b', null, a.name), h('span', { class: 'badge ' + (a.workspace_kind === 'personal' ? 'info' : '') }, sourceLabel(a)), a.archived ? h('span', { class: 'badge' }, 'Arşiv') : null, h('div', { class: 'xs muted' }, [a.bank_name, a.iban].filter(Boolean).join(' · '))) },
             { key: 'currency', label: 'Birim' },
             { key: 'balance_minor', label: 'Bakiye', num: true, render: (a) => h('b', { class: signClass(a.balance_minor) }, money(a.balance_minor, a.currency)) },
             { label: '', act: true, sortable: false, render: (a) => h('div', { class: 'row tight' },
@@ -52,6 +54,7 @@ export default async function render(ctx) {
               readonly ? null : h('button', { class: 'btn sm ghost', 'aria-label': 'Diğer işlemler', onclick: (e) => menu(e.currentTarget, [
                 { label: '✏️ Düzenle', run: () => accountForm(a, ctx.refresh) }, { label: '⚖️ Bakiye düzeltme', run: () => adjustForm(a, ctx.refresh) },
                 { label: '🏦 Ekstre içe aktar / mutabakat', run: () => ctx.go('/reconcile?account=' + a.id) },
+                { label: '🗑 Sil (hareketi yoksa)', run: async () => { if (!await confirmDialog({ title: 'Hesabı sil', text: '“' + a.name + '” silinsin mi? Yalnızca hiç hareketi olmayan, yanlışlıkla açılmış hesaplar silinebilir. Hareketi olan hesaplar silinmez; bakiyeyi sıfırlayıp arşivleyebilirsiniz.', ok: 'Sil', danger: true })) return; try { await api.del('/accounts/' + a.id); await loadMeta(); ctx.refresh(); toast('Hesap silindi', 'ok'); } catch (e) { errToast(e); } } },
                 { label: a.archived ? '↩️ Arşivden çıkar' : '🗄 Arşivle', run: async () => { try { await api.patch('/accounts/' + a.id, { archived: !a.archived }); await loadMeta(); ctx.refresh(); toast('Güncellendi', 'ok'); } catch (e) { errToast(e); } } }]) }, '⋯')) },
           ], rows: accs,
         }) : h('div', { class: 'muted small' }, 'Bu alanda henüz hesap yok.'))) : emptyState({ icon: '🏦', title: 'Henüz alan veya hesap yok', text: 'Önce bir işletme/şahsi alan, sonra banka hesabı veya kasa ekleyin.', action: readonly ? null : h('button', { class: 'btn primary', onclick: () => workspaceForm(null, ctx.refresh) }, 'Alan oluştur') }));
